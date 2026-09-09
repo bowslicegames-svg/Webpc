@@ -1,12 +1,23 @@
-CC = gcc
+EMCC ?= emcc
+SRC = src/main.c
+OUT_DIR = build
+OUT_JS = $(OUT_DIR)/tinyemu.js
+OUT_WASM = $(OUT_DIR)/tinyemu.wasm
+
 CFLAGS = -O2
-SRC = src/tinyemu_stub.c
-OUT = tinyemu_stub
 
-all: $(OUT)
+all: $(OUT_JS)
 
-$(OUT): $(SRC)
-    $(CC) $(CFLAGS) -o $(OUT) $(SRC)
+$(OUT_JS): $(SRC)
+    mkdir -p $(OUT_DIR)
+    $(EMCC) $(SRC) -o $(OUT_JS) \
+      -O2 \
+      -s WASM=1 \
+      -s MODULARIZE=1 \
+      -s EXPORT_NAME="TinyEmuModule" \
+      -s ALLOW_MEMORY_GROWTH=1 \
+      -s ENVIRONMENT='web' \
+      -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap"]'
 
 clean:
-    rm -f $(OUT)
+    rm -rf $(OUT_DIR)
