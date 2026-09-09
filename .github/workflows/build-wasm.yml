@@ -1,19 +1,19 @@
-name: Build WASM
-
-permissions:
-  contents: write
+name: Build TinyEMU WASM (Artifact)
 
 on:
+  workflow_dispatch:
   push:
     branches: [ main ]
-  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout source
         uses: actions/checkout@v4
 
       - name: Install Emscripten SDK
@@ -23,11 +23,11 @@ jobs:
           ./emsdk install latest
           ./emsdk activate latest
 
-      - name: Build tinyemu demo
+      - name: Build TinyEMU
         run: |
           source emsdk/emsdk_env.sh
-          mkdir -p docs/wasm
-          emcc wasm-vm/src/main.c -o docs/wasm/tinyemu.js \
+          mkdir -p build
+          emcc wasm-vm/src/main.c -o build/tinyemu.js \
             -O2 \
             -s WASM=1 \
             -s MODULARIZE=1 \
@@ -37,10 +37,8 @@ jobs:
             -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap"]' \
             -s NO_EXIT_RUNTIME=1
 
-      - name: Commit built artifacts
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add docs/wasm
-          git commit -m "Add WASM build" || echo "No changes"
-          git push
+      - name: Upload WASM + JS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: tinyemu-wasm-build
+          path: build/
