@@ -1,4 +1,4 @@
-name: Build WASM Emscripten
+name: Build WASM
 
 on:
   push:
@@ -8,30 +8,23 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install system deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential python3 python3-pip cmake git
-
       - name: Install Emscripten SDK
         run: |
-          git clone https://github.com/emscripten-core/emsdk.git emsdk
+          git clone https://github.com/emscripten-core/emsdk.git
           cd emsdk
           ./emsdk install latest
           ./emsdk activate latest
-          echo "EMSDK=$(pwd)" >> $GITHUB_ENV
-          echo "${{ env.EMSDK }}/upstream/emscripten:$(pwd)/node/12.18.1/bin:$PATH" >> $GITHUB_ENV
 
-      - name: Build tinyemu demo to WASM
-        env:
-          PATH: ${{ env.PATH }}:${{ env.EMSDK }}/upstream/emscripten
+      - name: Build tinyemu demo
         run: |
-          mkdir -p wasm
-          emcc wasm-vm/src/main.c -o wasm/tinyemu.js \
+          source emsdk/emsdk_env.sh
+          mkdir -p docs/wasm
+          emcc wasm-vm/src/main.c -o docs/wasm/tinyemu.js \
             -O2 \
             -s WASM=1 \
             -s MODULARIZE=1 \
@@ -40,14 +33,11 @@ jobs:
             -s ENVIRONMENT='web' \
             -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap"]' \
             -s NO_EXIT_RUNTIME=1
-          ls -la wasm
 
       - name: Commit built artifacts
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          mkdir -p web/wasm
-          cp -r wasm/* web/wasm/
-          git add web/wasm
-          git commit -m "Add built wasm artifacts" || echo "No changes to commit"
+          git add docs/wasm
+          git commit -m "Add WASM build" || echo "No changes"
           git push
