@@ -1,0 +1,18 @@
+# Node / web
+node_modules/
+dist/
+build/
+*.log
+
+# WASM / builds
+*.wasm
+*.o
+*.a
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
