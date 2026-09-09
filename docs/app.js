@@ -1,60 +1,68 @@
-import { renderCommands } from '../gl-webgpu/web/renderer.js';
+// docs/app.js
+// TinyEMU WASM loader for GitHub Pages (served from /docs)
 
 const vmOutput = document.getElementById('vm-output');
 const startBtn = document.getElementById('start-vm');
 const renderBtn = document.getElementById('render');
 const canvas = document.getElementById('screen');
 
+// Append text to VM console
 function appendVmLine(line) {
-  vmOutput.textContent += line + '\n';
+  vmOutput.textContent += line + "\n";
   vmOutput.scrollTop = vmOutput.scrollHeight;
 }
 
+// Global error capture (important for iPad debugging)
+window.addEventListener('error', e => {
+  appendVmLine("Global error: " + (e.message || e));
+});
+window.addEventListener('unhandledrejection', e => {
+  appendVmLine("Unhandled rejection: " + (e.reason && e.reason.message ? e.reason.message : e.reason));
+});
+
+// Load tinyemu.js dynamically
 async function loadTinyEmuScript(path) {
   return new Promise((resolve, reject) => {
-    if (window.TinyEmuModule) {
-      resolve();
-      return;
-    }
     const s = document.createElement('script');
     s.src = path;
     s.onload = () => resolve();
-    s.onerror = (e) => reject(new Error('Failed to load tinyemu script: ' + path));
+    s.onerror = () => reject(new Error("Failed to load script: " + path));
     document.head.appendChild(s);
   });
 }
 
+// Start VM button
 startBtn.addEventListener('click', async () => {
-  vmOutput.textContent = '';
-  appendVmLine('Loading TinyEmu WASM module...');
+  vmOutput.textContent = "";
+  appendVmLine("Loading TinyEmu WASM module...");
 
   try {
-    // Adjust path if you moved build files. This expects wasm-vm/build/tinyemu.js relative to web/
-    await loadTinyEmuScript('../wasm-vm/build/tinyemu.js');
+    // GitHub Pages serves /docs as root → wasm/tinyemu.js is correct
+    await loadTinyEmuScript("wasm/tinyemu.js");
 
-    // Create module instance with custom print handlers
+    appendVmLine("Script loaded. Instantiating module...");
+
     const moduleConfig = {
       print: (text) => appendVmLine(String(text)),
-      printErr: (text) => appendVmLine('ERR: ' + String(text)),
+      printErr: (text) => appendVmLine("ERR: " + String(text)),
       noInitialRun: false
     };
 
-    // TinyEmuModule is the function exported by the Emscripten modularized build
-    const instancePromise = window.TinyEmuModule(moduleConfig);
+    // TinyEmuModule is created by the modularized Emscripten build
+    const instance = await window.TinyEmuModule(moduleConfig);
 
-    appendVmLine('Instantiating module...');
-    await instancePromise;
-
-    appendVmLine('TinyEmu WASM module started.');
+    appendVmLine("TinyEmu WASM module started.");
   } catch (err) {
-    appendVmLine('Failed to start TinyEmu: ' + err.message);
+    appendVmLine("Failed to start VM: " + err.message);
   }
 });
 
-renderBtn.addEventListener('click', async () => {
-  const commands = [
-    { cmd: 'clear' },
-    { cmd: 'frame', data: 'placeholder-frame-bytes-0123456789' }
-  ];
-  await renderCommands(canvas, commands);
+// Simple renderer demo
+renderBtn.addEventListener('click', () => {
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#111";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = "#0f0";
+  ctx.font = "16px monospace";
+  ctx.fillText("Renderer: placeholder frame", 10, 30);
 });
