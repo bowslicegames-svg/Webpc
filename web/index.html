@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Browser Linux MC — Demo</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <h1>Browser Linux MC — Demo</h1>
+    <p>Local demo scaffold. Replace stubs with real WASM VM, GPU bridge, and translator.</p>
+  </header>
+
+  <main>
+    <section id="vm">
+      <h2>VM</h2>
+      <button id="start-vm">Start VM (stub)</button>
+      <pre id="vm-output"></pre>
+    </section>
+
+    <section id="renderer">
+      <h2>Renderer</h2>
+      <canvas id="screen" width="800" height="480"></canvas>
+      <button id="render">Render placeholder frame</button>
+    </section>
+  </main>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
