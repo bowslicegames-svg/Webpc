@@ -1,4 +1,4 @@
-name: Extract vmlinux from Google Drive disk.raw
+name: Extract vmlinux from OneDrive disk.raw
 
 on:
   workflow_dispatch:
@@ -8,27 +8,15 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Download disk.raw from Google Drive (large file support)
+      - name: Download disk.raw from OneDrive
         run: |
           mkdir work
           cd work
 
-          FILE_ID="1PzOalhxIo1ay_6AMarYVr7t6ZCO7PJF0"
+          ONEDRIVE_URL="https://my.sharepoint.com/:i:/g/personal/myname/IQCKi9tzBJNLS60Wfp2gDWrEAWPEh7yr9jpLFOHwUT9X4tI?e=I7Sh91"
 
-          echo "Step 1: Requesting initial page..."
-          curl -c cookies.txt -s -L \
-            "https://drive.google.com/uc?export=download&id=${FILE_ID}" \
-            -o initial.html
-
-          echo "Step 2: Extracting confirm token..."
-          CONFIRM=$(sed -rn 's/.*confirm=([0-9A-Za-z_]+).*/\1/p' initial.html)
-
-          echo "Confirm token: ${CONFIRM}"
-
-          echo "Step 3: Downloading actual disk.raw..."
-          curl -Lb cookies.txt -s -L \
-            "https://drive.google.com/uc?export=download&confirm=${CONFIRM}&id=${FILE_ID}" \
-            -o disk.raw
+          echo "Downloading disk.raw from OneDrive..."
+          curl -L "$ONEDRIVE_URL" -o disk.raw
 
           echo "Downloaded file:"
           ls -lh disk.raw
