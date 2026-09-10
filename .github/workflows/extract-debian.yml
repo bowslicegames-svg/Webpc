@@ -1,4 +1,4 @@
-name: Extract Debian riscv64 kernel
+name: Extract vmlinux from Google Drive disk.raw
 
 on:
   workflow_dispatch:
@@ -6,12 +6,14 @@ on:
 jobs:
   extract:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Download disk.raw artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: disk-raw-upload
-          path: work
+      - name: Download disk.raw from Google Drive
+        run: |
+          mkdir work
+          cd work
+          echo "Downloading disk.raw..."
+          wget --no-check-certificate "https://drive.google.com/file/d/1PzOalhxIo1ay_6AMarYVr7t6ZCO7PJF0/view?usp=sharing" -O disk.raw
 
       - name: Install tools
         run: |
@@ -24,6 +26,7 @@ jobs:
           sudo kpartx -av disk.raw
           ls /dev/mapper
           sudo mkdir mnt
+          # Try first partition, fallback to second
           sudo mount /dev/mapper/loop0p1 mnt || sudo mount /dev/mapper/loop0p2 mnt
           cp mnt/boot/vmlinux* ./vmlinux
           sudo umount mnt
