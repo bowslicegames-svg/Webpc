@@ -1,31 +1,17 @@
 <!doctype html>
-<html lang="en">
+<html>
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Browser Linux MC — TinyEMU WASM Demo</title>
-  <link rel="stylesheet" href="style.css" />
+  <title>Upload disk.raw (temporary)</title>
 </head>
 <body>
-  <header>
-    <h1>Browser Linux MC — TinyEMU WASM Demo</h1>
-    <p>Local WASM VM demo. Build wasm-vm and click Start VM.</p>
-  </header>
+  <h1>Temporary Upload</h1>
+  <input id="file" type="file" />
+  <br/><br/>
+  <label>Commit path (repo): <input id="path" value="uploads/disk.raw" style="width:400px" /></label>
+  <br/><br/>
+  <button id="upload">Upload and commit to repo (small files only)</button>
 
-  <main>
-    <section id="vm">
-      <h2>VM</h2>
-      <button id="start-vm">Start VM</button>
-      <pre id="vm-output"></pre>
-    </section>
-
-    <section id="renderer">
-      <h2>Renderer</h2>
-      <canvas id="screen" width="800" height="480"></canvas>
-      <button id="render">Render placeholder frame</button>
-    </section>
-  </main>
-
-  <script type="module" src="app.js"></script>
+  <script src="app.js"></script>
 </body>
 </html>
