@@ -7,39 +7,30 @@ jobs:
   extract:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Download disk.raw artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: disk-raw-upload
+          path: work
 
-      - name: Prepare disk image
-        run: |
-          mkdir work
-          cp docs/wasm/disk.raw work/disk.raw
-
-      - name: Mount disk image and extract vmlinux
+      - name: Install tools
         run: |
           sudo apt-get update
           sudo apt-get install -y qemu-utils kpartx
 
+      - name: Extract vmlinux
+        run: |
           cd work
-          # Create loop device mappings
           sudo kpartx -av disk.raw
-
-          # Find the partition (usually loop0p1 or loop0p2)
           ls /dev/mapper
-
-          # Mount the first partition
           sudo mkdir mnt
           sudo mount /dev/mapper/loop0p1 mnt || sudo mount /dev/mapper/loop0p2 mnt
-
-          # Copy vmlinux from /boot
           cp mnt/boot/vmlinux* ./vmlinux
-
-          # Unmount and clean up
           sudo umount mnt
           sudo kpartx -dv disk.raw
 
-      - name: Upload kernel and disk image
+      - name: Upload extracted kernel
         uses: actions/upload-artifact@v4
         with:
-          name: debian-riscv64-boot-files
-          path: work/
+          name: debian-vmlinux
+          path: work/vmlinux
