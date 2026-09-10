@@ -8,12 +8,24 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Download disk.raw from Google Drive
+      - name: Download disk.raw from Google Drive (large file support)
         run: |
           mkdir work
           cd work
-          echo "Downloading disk.raw..."
-          wget --no-check-certificate "https://drive.google.com/uc?export=download&id=1PzOalhxIo1ay_6AMarYVr7t6ZCO7PJF0" -O disk.raw
+
+          FILE_ID="1PzOalhxIo1ay_6AMarYVr7t6ZCO7PJF0"
+
+          # Step 1: get the confirmation token
+          CONFIRM=$(wget --quiet --save-cookies cookies.txt --keep-session-cookies \
+            "https://drive.google.com/uc?export=download&id=${FILE_ID}" -O- \
+            | sed -rn 's/.*confirm=([0-9A-Za-z_]+).*/\1/p')
+
+          # Step 2: download the actual file using the confirmation token
+          wget --load-cookies cookies.txt \
+            "https://drive.google.com/uc?export=download&confirm=${CONFIRM}&id=${FILE_ID}" \
+            -O disk.raw
+
+          ls -lh disk.raw
 
       - name: Install tools
         run: |
@@ -26,7 +38,6 @@ jobs:
           sudo kpartx -av disk.raw
           ls /dev/mapper
           sudo mkdir mnt
-          # Try first partition, fallback to second
           sudo mount /dev/mapper/loop0p1 mnt || sudo mount /dev/mapper/loop0p2 mnt
           cp mnt/boot/vmlinux* ./vmlinux
           sudo umount mnt
