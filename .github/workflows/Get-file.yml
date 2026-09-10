@@ -1,0 +1,74 @@
+name: Download and extract vmlinux from release (public)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Prepare workspace
+        run: |
+          mkdir -p work
+          cd work
+          pwd
+          ls -la
+
+      - name: Download release zip (public)
+        run: |
+          cd work
+          OWNER="bowslicegames-svg"
+          REPO="WebPC"
+          TAG="zip"                     # release tag
+          ASSET="disk.zip"           # asset filename as uploaded to release
+          URL="https://github.com/${OWNER}/${REPO}/releases/download/${TAG}/${ASSET}"
+          echo "Downloading ${URL}"
+          curl -L "$URL" -o disk.zip
+          ls -lh disk.zip
+
+      - name: Unzip and prepare disk.raw
+        run: |
+          cd work
+          unzip -o disk.zip
+          # If the zip contains disk.raw at top-level, it will now be work/disk.raw
+          # If it contains a folder, adjust path accordingly.
+          ls -lh
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-utils kpartx unzip
+
+      - name: Extract vmlinux from disk.raw
+        run: |
+          cd work
+          # adjust if disk.raw is inside a subfolder
+          if [ ! -f disk.raw ]; then
+            echo "Looking for disk.raw inside extracted files..."
+            find . -type f -name "disk.raw" -print -quit
+            # if found, move it to work/disk.raw
+            FOUND=$(find . -type f -name "disk.raw" -print -quit)
+            if [ -n "$FOUND" ]; then
+              mv "$FOUND" disk.raw
+            else
+              echo "disk.raw not found; listing files:"; ls -R
+              exit 1
+            fi
+          fi
+
+          sudo kpartx -av disk.raw
+          sleep 1
+          ls -l /dev/mapper || true
+          sudo mkdir -p mnt
+          sudo mount /dev/mapper/loop0p1 mnt || sudo mount /dev/mapper/loop0p2 mnt
+          ls -l mnt/boot || true
+          cp mnt/boot/vmlinux* ./vmlinux
+          ls -lh vmlinux
+          sudo umount mnt || true
+          sudo kpartx -dv disk.raw || true
+
+      - name: Upload extracted kernel
+        uses: actions/upload-artifact@v4
+        with:
+          name: debian-vmlinux
+          path: work/vmlinux
