@@ -1,37 +1,14 @@
-name: Extract vmlinux from disk.raw artifact
+name: Upload disk.raw
 
 on:
   workflow_dispatch:
 
 jobs:
-  extract:
+  upload:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Download disk.raw artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: disk-raw-upload
-          path: work
-
-      - name: Install tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y qemu-utils kpartx
-
-      - name: Extract vmlinux
-        run: |
-          cd work
-          sudo kpartx -av disk.raw
-          ls /dev/mapper
-          sudo mkdir mnt
-          sudo mount /dev/mapper/loop0p1 mnt || sudo mount /dev/mapper/loop0p2 mnt
-          cp mnt/boot/vmlinux* ./vmlinux
-          sudo umount mnt
-          sudo kpartx -dv disk.raw
-
-      - name: Upload extracted kernel
+      - name: Upload disk.raw
         uses: actions/upload-artifact@v4
         with:
-          name: debian-vmlinux
-          path: work/vmlinux
+          name: disk-raw-upload
+          path: disk.raw
