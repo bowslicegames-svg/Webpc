@@ -1,4 +1,4 @@
-name: Extract vmlinux from OneDrive disk.raw
+name: Extract vmlinux from disk.raw artifact
 
 on:
   workflow_dispatch:
@@ -8,18 +8,11 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Download disk.raw from OneDrive
-        run: |
-          mkdir work
-          cd work
-
-          ONEDRIVE_URL="https://westminsterschool-my.sharepoint.com/:i:/g/personal/thomas_knutson_westminster_org_uk/IQCKi9tzBJNLS60Wfp2gDWrEAWPEh7yr9jpLFOHwUT9X4tI"
-
-          echo "Downloading disk.raw from OneDrive..."
-          curl -L "$ONEDRIVE_URL" -o disk.raw
-
-          echo "Downloaded file:"
-          ls -lh disk.raw
+      - name: Download disk.raw artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: disk-raw-upload
+          path: work
 
       - name: Install tools
         run: |
@@ -29,20 +22,11 @@ jobs:
       - name: Extract vmlinux
         run: |
           cd work
-          echo "Mapping partitions..."
           sudo kpartx -av disk.raw
-
-          echo "Checking mapper devices..."
           ls /dev/mapper
-
-          echo "Mounting partition..."
           sudo mkdir mnt
           sudo mount /dev/mapper/loop0p1 mnt || sudo mount /dev/mapper/loop0p2 mnt
-
-          echo "Copying vmlinux..."
           cp mnt/boot/vmlinux* ./vmlinux
-
-          echo "Unmounting..."
           sudo umount mnt
           sudo kpartx -dv disk.raw
 
