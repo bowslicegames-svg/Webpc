@@ -1,0 +1,11 @@
+name: Manual Upload
+
+on:
+  workflow_dispatch:
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for manual upload
+        run: echo "Upload your disk.raw using the UI below."
