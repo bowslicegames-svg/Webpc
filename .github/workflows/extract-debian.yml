@@ -13,7 +13,7 @@ jobs:
           mkdir work
           cd work
 
-          ONEDRIVE_URL="https://my.sharepoint.com/:i:/g/personal/myname/IQCKi9tzBJNLS60Wfp2gDWrEAWPEh7yr9jpLFOHwUT9X4tI?e=I7Sh91"
+          ONEDRIVE_URL="https://westminsterschool-my.sharepoint.com/:i:/g/personal/thomas_knutson_westminster_org_uk/IQCKi9tzBJNLS60Wfp2gDWrEAWPEh7yr9jpLFOHwUT9X4tI"
 
           echo "Downloading disk.raw from OneDrive..."
           curl -L "$ONEDRIVE_URL" -o disk.raw
