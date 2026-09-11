@@ -20,26 +20,6 @@ jobs:
         run: |
           mkdir -p work
 
-      - name: Download release ZIP
-        run: |
-          cd work
-          curl -L "https://github.com/bowslicegames-svg/Webpc/releases/download/Zip/disk.zip" -o disk.zip
-          ls -lh
-
-      - name: Unzip and locate disk.raw
-        run: |
-          cd work
-          unzip -o disk.zip
-          FOUND=$(find . -type f -name "disk.raw" -print -quit)
-          if [ -z "$FOUND" ]; then
-            echo "ERROR: disk.raw not found"
-            exit 1
-          fi
-          echo "Found disk.raw at: $FOUND"
-          # Copy it to a known name (avoid mv same-file errors)
-          cp "$FOUND" ./disk.raw
-          ls -lh disk.raw
-
       - name: Split disk.raw into 100MB parts
         run: |
           cd work
