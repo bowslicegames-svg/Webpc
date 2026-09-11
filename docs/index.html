@@ -3,29 +3,35 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Browser Linux MC — TinyEMU WASM Demo</title>
-  <link rel="stylesheet" href="style.css" />
+  <title>WebPC — TinyEMU</title>
+  <style>
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; margin: 20px; }
+    #controls { margin-bottom: 12px; }
+    #progress { width: 100%; height: 18px; background: #eee; border-radius: 4px; overflow: hidden; }
+    #progress > i { display: block; height: 100%; width: 0%; background: linear-gradient(90deg,#4caf50,#2e7d32); transition: width 200ms; }
+    #log { white-space: pre-wrap; background:#111; color:#dcdcdc; padding:10px; border-radius:6px; height:240px; overflow:auto; font-family: monospace; }
+    button { padding:8px 12px; font-size:14px; }
+  </style>
 </head>
 <body>
-  <header>
-    <h1>Browser Linux MC — TinyEMU WASM Demo</h1>
-    <p>Local WASM VM demo. Build wasm-vm and click Start VM.</p>
-  </header>
+  <h1>WebPC — TinyEMU</h1>
 
-  <main>
-    <section id="vm">
-      <h2>VM</h2>
-      <button id="start-vm">Start VM</button>
-      <pre id="vm-output"></pre>
-    </section>
+  <div id="controls">
+    <button id="start-vm">Start VM</button>
+    <button id="stop-vm" disabled>Stop VM</button>
+    <div id="progress" aria-hidden="true"><i></i></div>
+    <div id="status" style="margin-top:8px">Idle</div>
+  </div>
 
-    <section id="renderer">
-      <h2>Renderer</h2>
-      <canvas id="screen" width="800" height="480"></canvas>
-      <button id="render">Render placeholder frame</button>
-    </section>
-  </main>
+  <div id="log" aria-live="polite"></div>
 
-  <script type="module" src="app.js"></script>
+  <!-- TinyEMU assets (assumed present in docs/wasm) -->
+  <script src="wasm/tinyemu.js"></script>
+
+  <!-- fflate for unzip -->
+  <script src="https://unpkg.com/fflate@0.7.4/umd/index.js"></script>
+
+  <!-- App logic -->
+  <script src="app.js"></script>
 </body>
 </html>
