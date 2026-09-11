@@ -1,14 +1,48 @@
-name: Upload disk.raw
+name: Unzip vmlinux and commit to repo
 
 on:
   workflow_dispatch:
 
 jobs:
-  upload:
+  unzip-and-commit:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Upload disk.raw
-        uses: actions/upload-artifact@v4
-        with:
-          name: disk-raw-upload
-          path: disk.raw
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Download debian-vmlinux.zip from repo
+        run: |
+          mkdir work
+          curl -L \
+            "https://raw.githubusercontent.com/bowslicegames-svg/Webpc/main/docs/wasm/debian-vmlinux.zip" \
+            -o work/debian-vmlinux.zip
+          ls -lh work
+
+      - name: Unzip
+        run: |
+          cd work
+          unzip -o debian-vmlinux.zip
+          ls -lh
+
+      - name: Move vmlinux into repo
+        run: |
+          # Find vmlinux inside the extracted files
+          FOUND=$(find work -type f -name "vmlinux" -print -quit)
+          if [ -z "$FOUND" ]; then
+            echo "vmlinux not found in ZIP"
+            exit 1
+          fi
+
+          # Move into docs/wasm/
+          mv "$FOUND" docs/wasm/vmlinux
+          ls -lh docs/wasm
+
+      - name: Commit vmlinux to repo
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+          git add docs/wasm/vmlinux
+          git commit -m "Add extracted vmlinux from debian-vmlinux.zip"
+          git push
