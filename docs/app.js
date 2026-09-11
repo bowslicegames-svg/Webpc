@@ -1,12 +1,14 @@
 // docs/app.js
-// Minimal, defensive client logic to download/extract disk.raw on Start VM click.
-// Assumes tinyemu.js is at wasm/tinyemu.js and vmlinux is at wasm/vmlinux.
-// Writes disk.raw into Emscripten FS at /disk/disk.raw and then calls your TinyEMU start function.
-// If your tinyemu build exposes a different start API, replace the startTinyEmu call accordingly.
+// Reassemble disk.raw from parts hosted at /wasm/parts/disk.raw.partNN
+// Streams each part into Emscripten FS to avoid large in-memory buffers.
+// After assembly, calls startTinyEmu({ kernelUrl: 'wasm/vmlinux', diskPath: '/disk/disk.raw' }).
+// Replace startTinyEmu call if your tinyemu build uses a different API.
 
 (() => {
-  const ZIP_RELEASE_URL = 'https://github.com/bowslicegames-svg/Webpc/releases/download/Zip/disk.zip';
-  const DISK_RAW_URL = null; // set to direct disk.raw URL if you host it uncompressed
+  const PARTS_BASE = 'wasm/parts/disk.raw.part'; // final URL will be e.g. wasm/parts/disk.raw.part00
+  const PART_PAD = 2; // number of digits in suffix (00, 01, ...)
+  const MAX_MISSING_IN_ROW = 1; // stop when a part is missing (404)
+  const CHUNK_WRITE = 4 * 1024 * 1024; // 4MB writes to FS
 
   const $ = sel => document.querySelector(sel);
   const startBtn = $('#start-vm');
@@ -17,132 +19,99 @@
 
   function log(...args) {
     const s = args.map(a => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ');
-    if (logEl) {
-      logEl.textContent += s + '\n';
-      logEl.scrollTop = logEl.scrollHeight;
-    }
+    if (logEl) { logEl.textContent += s + '\n'; logEl.scrollTop = logEl.scrollHeight; }
     console.log(...args);
   }
-
   function setStatus(s) { if (statusEl) statusEl.textContent = s; }
   function setProgressFraction(f) { if (progressBar) progressBar.style.width = Math.round(Math.max(0, Math.min(1, f)) * 100) + '%'; }
   function resetProgress() { setProgressFraction(0); }
 
-  // Wait for Emscripten Module readiness (if present)
-  function waitForModuleReady(timeoutMs = 20000) {
-    return new Promise((resolve, reject) => {
-      if (typeof Module !== 'undefined' && (Module.calledRun || Module.onRuntimeInitialized)) {
-        resolve(Module);
-        return;
-      }
-      let resolved = false;
-      if (typeof Module !== 'undefined') {
-        const prev = Module.onRuntimeInitialized;
-        Module.onRuntimeInitialized = function () {
-          if (typeof prev === 'function') prev();
-          if (!resolved) { resolved = true; resolve(Module); }
-        };
-      }
-      const start = Date.now();
-      const iv = setInterval(() => {
-        if (typeof Module !== 'undefined' && (Module.calledRun || Module.onRuntimeInitialized)) {
-          clearInterval(iv);
-          if (!resolved) { resolved = true; resolve(Module); }
-        } else if (Date.now() - start > timeoutMs) {
-          clearInterval(iv);
-          if (!resolved) { resolved = true; reject(new Error('Module did not initialize in time')); }
-        }
-      }, 200);
-    });
-  }
-
-  // Stream direct disk.raw into Emscripten FS (if available)
-  async function tryFetchDirectDiskRaw(url, onProgress) {
-    if (!url) return null;
-    log('Attempting direct disk.raw fetch:', url);
+  // Helper to fetch a part URL and stream-write into Module.FS file descriptor
+  async function streamWritePartToFd(url, fd, startPosition, onProgressChunk) {
     const resp = await fetch(url);
-    if (!resp.ok) { log('Direct fetch failed:', resp.status); return null; }
-    const reader = resp.body.getReader();
-    const total = resp.headers.get('content-length') ? parseInt(resp.headers.get('content-length'), 10) : null;
-    let received = 0;
-
-    if (typeof Module === 'undefined' || !Module.FS) {
-      throw new Error('Emscripten Module.FS not available for writing disk.raw');
+    if (!resp.ok) {
+      const err = new Error('Fetch failed: ' + resp.status);
+      err.status = resp.status;
+      throw err;
     }
-
-    try { Module.FS.mkdir('/disk'); } catch (e) {}
-    const fd = Module.FS.open('/disk/disk.raw', 'w+');
-
-    let position = 0;
+    const reader = resp.body.getReader();
+    let pos = startPosition;
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      Module.FS.write(fd, value, 0, value.length, position);
-      position += value.length;
-      received += value.length;
-      if (onProgress) onProgress(received, total);
+      // value is a Uint8Array
+      Module.FS.write(fd, value, 0, value.length, pos);
+      pos += value.length;
+      if (onProgressChunk) onProgressChunk(value.length);
     }
-    Module.FS.close(fd);
-    log('Direct disk.raw written to /disk/disk.raw, bytes:', position);
-    return '/disk/disk.raw';
+    return pos; // new position after writing
   }
 
-  // Download ZIP, unzip with fflate, write disk.raw in chunks
-  async function fetchAndExtractDiskZip(zipUrl, onProgress) {
-    log('Downloading ZIP:', zipUrl);
-    setStatus('Downloading ZIP...');
-    resetProgress();
-
-    const resp = await fetch(zipUrl);
-    if (!resp.ok) throw new Error('Failed to download ZIP: ' + resp.status);
-    const reader = resp.body.getReader();
-    const chunks = [];
-    let received = 0;
-    const total = resp.headers.get('content-length') ? parseInt(resp.headers.get('content-length'), 10) : null;
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      chunks.push(value);
-      received += value.length;
-      if (onProgress) onProgress(received, total);
-    }
-
-    setProgressFraction(0.45);
-    setStatus('Unzipping in browser...');
-    log('ZIP downloaded, bytes:', received);
-
-    // Concatenate
-    const buf = new Uint8Array(received);
-    let off = 0;
-    for (const c of chunks) { buf.set(c, off); off += c.length; }
-
-    // unzip
-    const files = fflate.unzipSync(buf);
-    log('Unzip entries:', Object.keys(files).length);
-    const entry = Object.keys(files).find(n => n.endsWith('disk.raw'));
-    if (!entry) throw new Error('disk.raw not found in ZIP');
-
-    const diskBytes = files[entry];
-    log('disk.raw size:', diskBytes.length);
-
+  // Assemble parts sequentially until a 404 is encountered
+  async function assemblePartsToDisk() {
     if (typeof Module === 'undefined' || !Module.FS) {
-      throw new Error('Emscripten Module.FS not available for writing disk.raw');
+      throw new Error('Emscripten Module.FS not available');
     }
 
+    // Ensure /disk exists
     try { Module.FS.mkdir('/disk'); } catch (e) {}
+
+    // Remove any existing file and open for writing
+    try { Module.FS.unlink('/disk/disk.raw'); } catch (e) {}
     const fd = Module.FS.open('/disk/disk.raw', 'w+');
-    const CHUNK = 4 * 1024 * 1024;
-    let pos = 0;
-    while (pos < diskBytes.length) {
-      const end = Math.min(pos + CHUNK, diskBytes.length);
-      const slice = diskBytes.subarray(pos, end);
-      Module.FS.write(fd, slice, 0, slice.length, pos);
-      pos = end;
-      setProgressFraction(0.45 + 0.55 * (pos / diskBytes.length));
+
+    let partIndex = 0;
+    let missingCount = 0;
+    let totalBytes = 0;
+    let reportedBytes = 0;
+
+    setStatus('Assembling disk from parts...');
+    resetProgress();
+    log('Starting assembly from parts at', PARTS_BASE);
+
+    // First pass: attempt to fetch parts sequentially until 404
+    while (true) {
+      const suffix = String(partIndex).padStart(PART_PAD, '0');
+      const url = `${PARTS_BASE}${suffix}`;
+      log('Fetching part', url);
+      try {
+        // stream the part directly into the open fd at current position
+        const prevPos = totalBytes;
+        const newPos = await streamWritePartToFd(url, fd, prevPos, (chunkLen) => {
+          totalBytes += chunkLen;
+          // update progress heuristically (we don't know final size)
+          const frac = Math.min(0.98, totalBytes / (1024 * 1024 * 1024)); // heuristic cap
+          setProgressFraction(frac);
+        });
+        // newPos equals prevPos + bytes written
+        reportedBytes = totalBytes;
+        log(`Wrote part ${suffix}, bytes written so far: ${reportedBytes}`);
+        partIndex += 1;
+        missingCount = 0; // reset missing counter
+      } catch (err) {
+        if (err && err.status === 404) {
+          log('Part not found (404):', url);
+          missingCount += 1;
+          if (missingCount >= MAX_MISSING_IN_ROW) {
+            log('No more parts found; finishing assembly.');
+            break;
+          } else {
+            // skip a single missing part and continue (rare)
+            partIndex += 1;
+            continue;
+          }
+        } else {
+          // other error: rethrow
+          Module.FS.close(fd);
+          throw err;
+        }
+      }
     }
+
     Module.FS.close(fd);
-    log('disk.raw written to /disk/disk.raw');
+    setProgressFraction(1);
+    setStatus('Assembly complete: ' + reportedBytes + ' bytes');
+    log('Assembly complete, total bytes:', reportedBytes);
     return '/disk/disk.raw';
   }
 
@@ -154,49 +123,40 @@
     log('Start VM pressed');
 
     try {
-      // Wait a short time for Module to initialize, but continue if it doesn't
-      await waitForModuleReady().catch(err => {
-        log('Module readiness: ' + err.message);
-      });
-
-      let diskPath = null;
-
-      if (DISK_RAW_URL) {
-        try {
-          diskPath = await tryFetchDirectDiskRaw(DISK_RAW_URL, (received, total) => {
-            if (total) setProgressFraction(received / total);
-            else setProgressFraction(Math.min(0.9, received / (1024*1024*100)));
-          });
-        } catch (err) {
-          log('Direct fetch error:', err.message);
-          diskPath = null;
-        }
-      }
-
-      if (!diskPath) {
-        diskPath = await fetchAndExtractDiskZip(ZIP_RELEASE_URL, (received, total) => {
-          if (total) setProgressFraction(received / total);
-          else setProgressFraction(Math.min(0.45, received / (1024*1024*500)));
+      // Wait briefly for Module to be ready if present
+      if (typeof Module !== 'undefined' && Module.onRuntimeInitialized) {
+        // If Module hasn't initialized yet, wait up to 10s
+        await new Promise((resolve) => {
+          let done = false;
+          const prev = Module.onRuntimeInitialized;
+          Module.onRuntimeInitialized = function () {
+            if (typeof prev === 'function') prev();
+            if (!done) { done = true; resolve(); }
+          };
+          setTimeout(() => { if (!done) { done = true; resolve(); } }, 10000);
         });
       }
 
-      setStatus('Disk ready. Starting TinyEMU...');
-      setProgressFraction(1);
+      // Assemble parts into /disk/disk.raw
+      const diskPath = await assemblePartsToDisk();
 
-      // Call your TinyEMU start function. Replace these with your actual API if different.
+      setStatus('Disk ready, starting TinyEMU...');
+      log('Disk assembled at', diskPath);
+
+      // Start TinyEMU. Replace this with your tinyemu init if different.
       if (typeof startTinyEmu === 'function') {
         startTinyEmu({ kernelUrl: 'wasm/vmlinux', diskPath });
       } else if (typeof Module !== 'undefined' && Module.start) {
         Module.start({ kernel: 'wasm/vmlinux', disk: diskPath });
       } else {
         log('No TinyEMU start function found. Disk prepared at', diskPath);
-        setStatus('Disk prepared. Adapt app.js to call your tinyemu init.');
+        setStatus('Disk prepared. Adapt app.js to start TinyEMU.');
       }
 
       stopBtn.disabled = false;
       setStatus('VM running (or disk prepared)');
     } catch (err) {
-      log('Error preparing disk or starting VM:', err && err.message ? err.message : err);
+      log('Error during assembly or start:', err && err.message ? err.message : err);
       setStatus('Error: ' + (err && err.message ? err.message : String(err)));
       startBtn.disabled = false;
       resetProgress();
@@ -214,10 +174,8 @@
     resetProgress();
   }
 
-  // Attach handlers immediately (works on iPad without devtools)
   if (startBtn) startBtn.addEventListener('click', onStartVm);
   if (stopBtn) stopBtn.addEventListener('click', onStopVm);
 
-  // Small startup log
-  log('app.js loaded. Click Start VM to download and extract disk.raw on demand.');
+  log('app.js loaded. Click Start VM to assemble disk from parts and boot TinyEMU.');
 })();
