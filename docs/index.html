@@ -5,12 +5,14 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>WebPC — TinyEMU</title>
   <style>
-    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; margin: 20px; }
-    #controls { margin-bottom: 12px; }
-    #progress { width: 100%; height: 18px; background: #eee; border-radius: 4px; overflow: hidden; }
-    #progress > i { display: block; height: 100%; width: 0%; background: linear-gradient(90deg,#4caf50,#2e7d32); transition: width 200ms; }
-    #log { white-space: pre-wrap; background:#111; color:#dcdcdc; padding:10px; border-radius:6px; height:240px; overflow:auto; font-family: monospace; }
-    button { padding:8px 12px; font-size:14px; }
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial; margin: 18px; color:#111; }
+    #controls { margin-bottom: 12px; display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+    #progress { width: 100%; max-width:720px; height:14px; background:#eee; border-radius:6px; overflow:hidden; margin-top:8px; }
+    #progress > i { display:block; height:100%; width:0%; background:linear-gradient(90deg,#4caf50,#2e7d32); transition:width 160ms ease; }
+    #status { margin-left:8px; min-width:220px; font-size:13px; color:#333; }
+    #log { white-space:pre-wrap; background:#0b0b0b; color:#dcdcdc; padding:10px; border-radius:6px; height:260px; overflow:auto; font-family:monospace; margin-top:12px; }
+    button { padding:8px 12px; font-size:14px; border-radius:6px; border:1px solid #ccc; background:#fff; cursor:pointer; }
+    button:disabled { opacity:0.5; cursor:not-allowed; }
   </style>
 </head>
 <body>
@@ -20,18 +22,18 @@
     <button id="start-vm">Start VM</button>
     <button id="stop-vm" disabled>Stop VM</button>
     <div id="progress" aria-hidden="true"><i></i></div>
-    <div id="status" style="margin-top:8px">Idle</div>
+    <div id="status">Idle</div>
   </div>
 
   <div id="log" aria-live="polite"></div>
 
-  <!-- TinyEMU assets (assumed present in docs/wasm) -->
+  <!-- tinyemu.js must be at docs/wasm/tinyemu.js -->
   <script src="wasm/tinyemu.js"></script>
 
-  <!-- fflate for unzip -->
+  <!-- unzip helper -->
   <script src="https://unpkg.com/fflate@0.7.4/umd/index.js"></script>
 
-  <!-- App logic -->
+  <!-- app logic (placed in same directory as this file: docs/app.js) -->
   <script src="app.js"></script>
 </body>
 </html>
