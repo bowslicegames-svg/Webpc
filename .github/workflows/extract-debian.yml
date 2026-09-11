@@ -1,5 +1,8 @@
 name: Unzip vmlinux and commit to repo
 
+permissions:
+  contents: write
+
 on:
   workflow_dispatch:
 
@@ -10,13 +13,13 @@ jobs:
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
+        with:
+          persist-credentials: true
 
       - name: Download debian-vmlinux.zip from repo
         run: |
-          mkdir work
-          curl -L \
-            "https://raw.githubusercontent.com/bowslicegames-svg/Webpc/main/docs/wasm/debian-vmlinux.zip" \
-            -o work/debian-vmlinux.zip
+          mkdir -p work
+          curl -L "https://raw.githubusercontent.com/bowslicegames-svg/Webpc/main/docs/wasm/debian-vmlinux.zip" -o work/debian-vmlinux.zip
           ls -lh work
 
       - name: Unzip
@@ -27,14 +30,12 @@ jobs:
 
       - name: Move vmlinux into repo
         run: |
-          # Find vmlinux inside the extracted files
           FOUND=$(find work -type f -name "vmlinux" -print -quit)
           if [ -z "$FOUND" ]; then
             echo "vmlinux not found in ZIP"
             exit 1
           fi
-
-          # Move into docs/wasm/
+          mkdir -p docs/wasm
           mv "$FOUND" docs/wasm/vmlinux
           ls -lh docs/wasm
 
@@ -42,7 +43,6 @@ jobs:
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
-
           git add docs/wasm/vmlinux
-          git commit -m "Add extracted vmlinux from debian-vmlinux.zip"
+          git commit -m "Add extracted vmlinux from debian-vmlinux.zip" || echo "No changes to commit"
           git push
