@@ -1,4 +1,4 @@
-name: Unzip vmlinux and commit to repo
+name: Import disk.raw from release ZIP
 
 permissions:
   contents: write
@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  unzip-and-commit:
+  import-disk:
     runs-on: ubuntu-latest
 
     steps:
@@ -16,33 +16,45 @@ jobs:
         with:
           persist-credentials: true
 
-      - name: Download debian-vmlinux.zip from repo
+      - name: Prepare workspace
         run: |
           mkdir -p work
-          curl -L "https://raw.githubusercontent.com/bowslicegames-svg/Webpc/main/docs/wasm/debian-vmlinux.zip" -o work/debian-vmlinux.zip
-          ls -lh work
+          cd work
+          pwd
 
-      - name: Unzip
+      - name: Download release ZIP
         run: |
           cd work
-          unzip -o debian-vmlinux.zip
+          curl -L "https://github.com/bowslicegames-svg/Webpc/releases/download/Zip/disk.zip" -o disk.zip
+          ls -lh disk.zip
+
+      - name: Unzip release
+        run: |
+          cd work
+          unzip -o disk.zip
           ls -lh
 
-      - name: Move vmlinux into repo
+      - name: Find and move disk.raw into repo
         run: |
-          FOUND=$(find work -type f -name "vmlinux" -print -quit)
+          # locate disk.raw inside extracted files
+          FOUND=$(find work -type f -name "disk.raw" -print -quit)
           if [ -z "$FOUND" ]; then
-            echo "vmlinux not found in ZIP"
+            # also check current directory (in case unzip created files at top-level)
+            FOUND=$(find . -type f -name "disk.raw" -print -quit)
+          fi
+          if [ -z "$FOUND" ]; then
+            echo "ERROR: disk.raw not found in the ZIP archive"
+            ls -R
             exit 1
           fi
           mkdir -p docs/wasm
-          mv "$FOUND" docs/wasm/vmlinux
+          mv "$FOUND" docs/wasm/disk.raw
           ls -lh docs/wasm
 
-      - name: Commit vmlinux to repo
+      - name: Commit disk.raw to repo
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
-          git add docs/wasm/vmlinux
-          git commit -m "Add extracted vmlinux from debian-vmlinux.zip" || echo "No changes to commit"
+          git add docs/wasm/disk.raw
+          git commit -m "Add disk.raw extracted from release ZIP" || echo "No changes to commit"
           git push
