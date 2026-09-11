@@ -24,7 +24,7 @@ jobs:
           cd work
           curl -L "https://github.com/bowslicegames-svg/Webpc/releases/download/Zip/disk.zip" -o disk.zip
 
-      - name: Unzip and locate disk.raw
+      - name: Unzip and copy disk.raw
         run: |
           cd work
           unzip -o disk.zip
@@ -34,7 +34,7 @@ jobs:
             exit 1
           fi
           echo "Found disk.raw at: $FOUND"
-          cp "$FOUND" ./disk.raw   # <-- SAFE COPY, no mv
+          cp "$FOUND" ./disk.raw   # <-- SAFE COPY, never errors
           ls -lh disk.raw
 
       - name: Split disk.raw into 100MB parts
