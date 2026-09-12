@@ -1,12 +1,9 @@
-// app.js — FINAL VERSION
-// Guaranteed to work once tinyemu.js initializes Module and FS.
-
 (() => {
   const PARTS_BASE = "wasm/parts/disk.raw.part";
   const PART_PAD = 2;
   const KERNEL_PATH = "wasm/vmlinux";
 
-  const $ = sel => document.querySelector(sel);
+  const $ = s => document.querySelector(s);
   const startBtn = $("#start-vm");
   const stopBtn = $("#stop-vm");
   const progressBar = $("#progress > i");
@@ -14,24 +11,34 @@
   const logEl = $("#log");
   const canvas = $("#screen");
 
+  let Module = null; // will be set by TinyEmuModule()
+
   function log(msg) {
     logEl.textContent += msg + "\n";
     logEl.scrollTop = logEl.scrollHeight;
     console.log(msg);
   }
-
   function setStatus(s) { statusEl.textContent = s; }
   function setProgress(f) { progressBar.style.width = (f * 100) + "%"; }
 
-  // Wait until Module.FS exists
-  async function waitForFS() {
-    setStatus("Waiting for runtime...");
-    const start = Date.now();
-    while (true) {
-      if (window._runtimeReady && Module.FS) return;
-      if (Date.now() - start > 30000) throw new Error("TinyEMU runtime never initialized");
-      await new Promise(r => setTimeout(r, 100));
-    }
+  async function initTinyEmu() {
+    if (Module) return Module; // already initialized
+
+    setStatus("Downloading VM module...");
+    log("Calling TinyEmuModule()...");
+
+    Module = await TinyEmuModule({
+      noInitialRun: true,
+      print: msg => log(msg),
+      printErr: msg => log("ERR: " + msg),
+      onRuntimeInitialized() {
+        log("TinyEMU runtime initialized");
+      }
+    });
+
+    if (!Module.FS) throw new Error("TinyEMU Module.FS not available after init");
+    log("Module.FS ready");
+    return Module;
   }
 
   async function streamPart(url, fd, pos) {
@@ -88,37 +95,24 @@
     log("Booting TinyEMU...");
     setStatus("Booting TinyEMU...");
 
-    if (typeof startTinyEmu === "function") {
-      startTinyEmu({
-        kernelUrl: KERNEL_PATH,
-        diskPath,
-        canvas
-      });
-      return;
+    // TinyEmuModule’s run() already wired _main; we just call main via ccall
+    if (Module.ccall) {
+      Module.ccall("main", "number", ["string", "string"], [KERNEL_PATH, diskPath]);
+      stopBtn.disabled = false;
+      setStatus("VM running");
+    } else {
+      log("ERROR: Module.ccall not available; adapt bootTinyEmu to your build.");
+      setStatus("TinyEMU start function missing");
     }
-
-    if (typeof Module.start === "function") {
-      Module.start({
-        kernel: KERNEL_PATH,
-        disk: diskPath,
-        canvas
-      });
-      return;
-    }
-
-    log("ERROR: No TinyEMU start function found.");
-    setStatus("TinyEMU start function missing");
   }
 
   async function startVM() {
     startBtn.disabled = true;
 
     try {
-      await waitForFS();
+      await initTinyEmu();
       const diskPath = await assembleDisk();
       bootTinyEmu(diskPath);
-      stopBtn.disabled = false;
-      setStatus("VM running");
     } catch (err) {
       log("ERROR: " + err.message);
       setStatus("Error: " + err.message);
@@ -128,7 +122,7 @@
 
   function stopVM() {
     log("Stopping VM...");
-    if (typeof stopTinyEmu === "function") stopTinyEmu();
+    // Your build may expose a stop function; if not, reload is the only full stop.
     stopBtn.disabled = true;
     startBtn.disabled = false;
     setStatus("Stopped");
@@ -137,5 +131,5 @@
   startBtn.addEventListener("click", startVM);
   stopBtn.addEventListener("click", stopVM);
 
-  log("app.js loaded");
+  log("app.js loaded; press Start VM to init TinyEMU and assemble disk.");
 })();
