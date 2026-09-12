@@ -33,7 +33,19 @@
     <canvas id="screen" width="800" height="600"></canvas>
   </div>
 
-  <!-- tinyemu.js should be at docs/wasm/tinyemu.js and wasm/vmlinux at docs/wasm/vmlinux -->
+  <!-- Ensure Module object exists before tinyemu.js loads so we can attach onRuntimeInitialized -->
+  <script>
+    // Provide a Module object early so app.js can reliably wait for runtime.
+    // If tinyemu.js defines Module itself, this will be merged.
+    window.Module = window.Module || {};
+    // Optional: prevent automatic run if tinyemu.js tries to auto-run
+    // Module.noInitialRun = true;
+    // Provide a hook array to allow multiple listeners
+    window._onModuleReadyCallbacks = window._onModuleReadyCallbacks || [];
+    // If tinyemu.js sets onRuntimeInitialized, it will be called; we also attach below in app.js.
+  </script>
+
+  <!-- tinyemu.js must be present at wasm/tinyemu.js -->
   <script src="wasm/tinyemu.js"></script>
 
   <!-- app logic -->
