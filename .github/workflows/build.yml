@@ -14,13 +14,19 @@ jobs:
       with:
         fetch-depth: 0
 
-    - name: Install Emscripten
-      uses: mymindstorm/emscripten-action@v3
-      with:
-        version: 3.1.45
+    - name: Install Emscripten SDK
+      run: |
+        git clone https://github.com/emscripten-core/emsdk.git
+        cd emsdk
+        ./emsdk install latest
+        ./emsdk activate latest
+        echo "$PWD/upstream/emscripten" >> $GITHUB_PATH
+        echo "$PWD" >> $GITHUB_PATH
 
     - name: Build TinyEMU
       run: |
+        source emsdk/emsdk_env.sh
+
         mkdir -p docs/wasm
 
         emcc tinyemu.c \
@@ -33,14 +39,14 @@ jobs:
           -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap"]' \
           -o docs/wasm/tinyemu.js
 
-        # Show sizes for debugging
+        echo "Built files:"
         ls -lh docs/wasm/tinyemu.js
         ls -lh docs/wasm/tinyemu.wasm
 
     - name: Disable Jekyll
       run: echo "" > docs/.nojekyll
 
-    - name: Upload artifact (GitHub Pages)
+    - name: Upload artifact
       uses: actions/upload-pages-artifact@v2
       with:
         path: docs/
