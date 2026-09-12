@@ -5,14 +5,16 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>WebPC — TinyEMU</title>
   <style>
-    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial; margin: 18px; color:#111; }
-    #controls { margin-bottom: 12px; display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
-    #progress { width: 100%; max-width:720px; height:14px; background:#eee; border-radius:6px; overflow:hidden; margin-top:8px; }
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial; margin:18px; color:#111; }
+    #controls { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:12px; }
+    #progress { width:100%; max-width:720px; height:14px; background:#eee; border-radius:6px; overflow:hidden; }
     #progress > i { display:block; height:100%; width:0%; background:linear-gradient(90deg,#4caf50,#2e7d32); transition:width 160ms ease; }
-    #status { margin-left:8px; min-width:220px; font-size:13px; color:#333; }
-    #log { white-space:pre-wrap; background:#0b0b0b; color:#dcdcdc; padding:10px; border-radius:6px; height:260px; overflow:auto; font-family:monospace; margin-top:12px; }
+    #status { min-width:220px; font-size:13px; color:#333; margin-left:8px; }
+    #log { white-space:pre-wrap; background:#0b0b0b; color:#dcdcdc; padding:10px; border-radius:6px; height:320px; overflow:auto; font-family:monospace; margin-top:12px; }
     button { padding:8px 12px; font-size:14px; border-radius:6px; border:1px solid #ccc; background:#fff; cursor:pointer; }
     button:disabled { opacity:0.5; cursor:not-allowed; }
+    #canvas-wrap { margin-top:12px; }
+    canvas { width:100%; max-width:800px; height:auto; background:#000; border-radius:6px; }
   </style>
 </head>
 <body>
@@ -27,10 +29,14 @@
 
   <div id="log" aria-live="polite"></div>
 
-  <!-- tinyemu.js must be at docs/wasm/tinyemu.js -->
+  <div id="canvas-wrap">
+    <canvas id="screen" width="800" height="600"></canvas>
+  </div>
+
+  <!-- tinyemu.js should be at docs/wasm/tinyemu.js and wasm/vmlinux at docs/wasm/vmlinux -->
   <script src="wasm/tinyemu.js"></script>
 
-  <!-- app logic (placed in same directory as this file: docs/app.js) -->
+  <!-- app logic -->
   <script src="app.js"></script>
 </body>
 </html>
