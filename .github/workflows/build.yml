@@ -39,7 +39,6 @@ jobs:
           -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap"]' \
           -o docs/wasm/tinyemu.js
 
-        echo "Built files:"
         ls -lh docs/wasm/tinyemu.js
         ls -lh docs/wasm/tinyemu.wasm
 
