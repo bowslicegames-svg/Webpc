@@ -5,50 +5,45 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>WebPC — TinyEMU</title>
   <style>
-    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial; margin:18px; color:#111; }
-    #controls { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:12px; }
-    #progress { width:100%; max-width:720px; height:14px; background:#eee; border-radius:6px; overflow:hidden; }
-    #progress > i { display:block; height:100%; width:0%; background:linear-gradient(90deg,#4caf50,#2e7d32); transition:width 160ms ease; }
-    #status { min-width:220px; font-size:13px; color:#333; margin-left:8px; }
-    #log { white-space:pre-wrap; background:#0b0b0b; color:#dcdcdc; padding:10px; border-radius:6px; height:320px; overflow:auto; font-family:monospace; margin-top:12px; }
-    button { padding:8px 12px; font-size:14px; border-radius:6px; border:1px solid #ccc; background:#fff; cursor:pointer; }
-    button:disabled { opacity:0.5; cursor:not-allowed; }
-    #canvas-wrap { margin-top:12px; }
-    canvas { width:100%; max-width:800px; height:auto; background:#000; border-radius:6px; }
+    body { font-family: system-ui; margin:18px; }
+    #controls { display:flex; gap:8px; margin-bottom:12px; }
+    #progress { width:100%; height:14px; background:#eee; border-radius:6px; overflow:hidden; }
+    #progress > i { display:block; height:100%; width:0%; background:#4caf50; transition:width .2s; }
+    #status { margin-left:8px; }
+    #log { white-space:pre-wrap; background:#111; color:#ddd; padding:10px; height:260px; overflow:auto; margin-top:12px; }
+    canvas { width:100%; max-width:800px; background:#000; margin-top:12px; }
   </style>
 </head>
 <body>
-  <h1>WebPC — TinyEMU</h1>
 
-  <div id="controls">
-    <button id="start-vm">Start VM</button>
-    <button id="stop-vm" disabled>Stop VM</button>
-    <div id="progress" aria-hidden="true"><i></i></div>
-    <div id="status">Idle</div>
-  </div>
+<h1>WebPC — TinyEMU</h1>
 
-  <div id="log" aria-live="polite"></div>
+<div id="controls">
+  <button id="start-vm">Start VM</button>
+  <button id="stop-vm" disabled>Stop VM</button>
+  <div id="progress"><i></i></div>
+  <div id="status">Idle</div>
+</div>
 
-  <div id="canvas-wrap">
-    <canvas id="screen" width="800" height="600"></canvas>
-  </div>
+<div id="log"></div>
+<canvas id="screen" width="800" height="600"></canvas>
 
-  <!-- Ensure Module object exists before tinyemu.js loads so we can attach onRuntimeInitialized -->
-  <script>
-    // Provide a Module object early so app.js can reliably wait for runtime.
-    // If tinyemu.js defines Module itself, this will be merged.
-    window.Module = window.Module || {};
-    // Optional: prevent automatic run if tinyemu.js tries to auto-run
-    // Module.noInitialRun = true;
-    // Provide a hook array to allow multiple listeners
-    window._onModuleReadyCallbacks = window._onModuleReadyCallbacks || [];
-    // If tinyemu.js sets onRuntimeInitialized, it will be called; we also attach below in app.js.
-  </script>
+<!-- CRITICAL: define Module BEFORE loading tinyemu.js -->
+<script>
+  window.Module = {
+    noInitialRun: true,          // prevents auto-run
+    onRuntimeInitialized() {     // signals FS is ready
+      console.log("TinyEMU runtime initialized");
+      window._runtimeReady = true;
+    }
+  };
+</script>
 
-  <!-- tinyemu.js must be present at wasm/tinyemu.js -->
-  <script src="wasm/tinyemu.js"></script>
+<!-- Load TinyEMU -->
+<script src="wasm/tinyemu.js"></script>
 
-  <!-- app logic -->
-  <script src="app.js"></script>
+<!-- App logic -->
+<script src="app.js"></script>
+
 </body>
 </html>
