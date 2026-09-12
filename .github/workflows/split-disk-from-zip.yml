@@ -1,13 +1,13 @@
-name: Split disk.raw from ZIP and save parts
-
-on:
-  workflow_dispatch:
+name: Import disk.raw from release ZIP
 
 permissions:
   contents: write
 
+on:
+  workflow_dispatch:
+
 jobs:
-  split-disk:
+  import-disk:
     runs-on: ubuntu-latest
 
     steps:
@@ -17,42 +17,61 @@ jobs:
           persist-credentials: true
 
       - name: Prepare workspace
-        run: mkdir -p work
+        run: |
+          mkdir -p work
+          cd work
+          pwd
 
       - name: Download release ZIP
         run: |
           cd work
           curl -L "https://github.com/bowslicegames-svg/Webpc/releases/download/Zip/disk.zip" -o disk.zip
+          ls -lh disk.zip
 
-      - name: Unzip and copy disk.raw
+      - name: Unzip release
         run: |
           cd work
           unzip -o disk.zip
-          FOUND=$(find . -type f -name "disk.raw" -print -quit)
-          if [ -z "$FOUND" ]; then
-            echo "ERROR: disk.raw not found"
-            exit 1
-          fi
-          echo "Found disk.raw at: $FOUND"
-          cp "$FOUND" ./disk.raw   # <-- SAFE COPY, never errors
-          ls -lh disk.raw
+          ls -lh
 
-      - name: Split disk.raw into 100MB parts
+      - name: Find disk.raw and split into parts
         run: |
           cd work
+          FOUND=$(find . -type f -name "disk.raw" -print -quit)
+          if [ -z "$FOUND" ]; then
+            echo "ERROR: disk.raw not found in ZIP"
+            ls -R
+            exit 1
+          fi
+
+          echo "Found disk.raw at: $FOUND"
+
+          # Copy to a stable name (avoids mv same-file errors)
+          cp "$FOUND" ./disk.raw
+          ls -lh disk.raw
+
+          echo "Splitting disk.raw into 100MB parts..."
           rm -f disk.raw.part*
           split -b 100M --numeric-suffixes=0 --suffix-length=2 disk.raw disk.raw.part
           ls -lh disk.raw.part*
 
-      - name: Commit parts into repo
+      - name: Save parts into docs/wasm/parts
         run: |
           mkdir -p docs/wasm/parts
+
+          # Remove old parts
           git rm -f docs/wasm/parts/disk.raw.part* || true
+
+          # Move new parts
           mv work/disk.raw.part* docs/wasm/parts/
 
+          ls -lh docs/wasm/parts
+
+      - name: Commit disk.raw parts to repo
+        run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
           git add docs/wasm/parts/disk.raw.part*
-          git commit -m "Add disk.raw split parts"
+          git commit -m "Add disk.raw split parts from release ZIP" || echo "No changes to commit"
           git push
