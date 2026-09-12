@@ -1,0 +1,56 @@
+name: Build TinyEMU
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Install Emscripten
+      uses: mymindstorm/emscripten-action@v3
+      with:
+        version: 3.1.45
+
+    - name: Build TinyEMU
+      run: |
+        mkdir -p docs/wasm
+
+        emcc tinyemu.c \
+          -O2 \
+          -s WASM=1 \
+          -s MODULARIZE=1 \
+          -s EXPORT_NAME="TinyEmuModule" \
+          -s ENVIRONMENT=web \
+          -s ALLOW_MEMORY_GROWTH=1 \
+          -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap"]' \
+          -o docs/wasm/tinyemu.js
+
+        # Show sizes for debugging
+        ls -lh docs/wasm/tinyemu.js
+        ls -lh docs/wasm/tinyemu.wasm
+
+    - name: Disable Jekyll
+      run: echo "" > docs/.nojekyll
+
+    - name: Upload artifact (GitHub Pages)
+      uses: actions/upload-pages-artifact@v2
+      with:
+        path: docs/
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    steps:
+    - name: Deploy to GitHub Pages
+      uses: actions/deploy-pages@v2
