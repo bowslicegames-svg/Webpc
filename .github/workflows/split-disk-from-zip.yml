@@ -44,11 +44,6 @@ jobs:
             exit 1
           fi
 
-          echo "Found disk.raw at: $FOUND"
-
-          # Copy to a stable name (avoids mv same-file errors)
-          cp "$FOUND" ./disk.raw
-          ls -lh disk.raw
 
           echo "Splitting disk.raw into 100MB parts..."
           rm -f disk.raw.part*
