@@ -1,0 +1,74 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>WASM Diagnostic</title>
+  <style>body{font-family:system-ui;margin:18px}pre{background:#111;color:#dcdcdc;padding:12px;border-radius:6px}</style>
+</head>
+<body>
+  <h2>WASM Diagnostic</h2>
+  <p id="info">Running checks…</p>
+  <pre id="out"></pre>
+
+  <script>
+    const out = msg => {
+      const el = document.getElementById('out');
+      el.textContent += msg + '\n';
+      console.log(msg);
+    };
+    const setInfo = s => document.getElementById('info').textContent = s;
+
+    (async function(){
+      const url = 'wasm/tinyemu.wasm';
+      setInfo('Fetching ' + url);
+      out('Fetch URL: ' + location.origin + '/' + url);
+
+      try {
+        // HEAD-like fetch to get headers
+        const headResp = await fetch(url, { method: 'GET', credentials: 'same-origin' });
+        out('HTTP status: ' + headResp.status + ' ' + headResp.statusText);
+        out('Response headers:');
+        for (const [k,v] of headResp.headers.entries()) {
+          out('  ' + k + ': ' + v);
+        }
+        const ct = headResp.headers.get('content-type') || '(none)';
+        out('Detected Content-Type: ' + ct);
+        const cl = headResp.headers.get('content-length') || '(unknown)';
+        out('Content-Length: ' + cl);
+
+        // Try instantiateStreaming if available
+        if (WebAssembly.instantiateStreaming) {
+          out('');
+          out('Trying WebAssembly.instantiateStreaming...');
+          try {
+            const inst = await WebAssembly.instantiateStreaming(fetch(url, {credentials:'same-origin'}), {});
+            out('instantiateStreaming succeeded. Module can run.');
+          } catch (e) {
+            out('instantiateStreaming failed: ' + e);
+            out('Falling back to ArrayBuffer instantiation...');
+            try {
+              const ab = await headResp.arrayBuffer();
+              const inst2 = await WebAssembly.instantiate(ab, {});
+              out('ArrayBuffer instantiation succeeded. Module can run.');
+            } catch (e2) {
+              out('ArrayBuffer instantiation failed: ' + e2);
+            }
+          }
+        } else {
+          out('instantiateStreaming not available in this browser; trying ArrayBuffer fallback...');
+          try {
+            const ab = await headResp.arrayBuffer();
+            const inst2 = await WebAssembly.instantiate(ab, {});
+            out('ArrayBuffer instantiation succeeded. Module can run.');
+          } catch (e2) {
+            out('ArrayBuffer instantiation failed: ' + e2);
+          }
+        }
+      } catch (err) {
+        out('Fetch failed: ' + err);
+      }
+      setInfo('Diagnostic complete');
+    })();
+  </script>
+</body>
+</html>
