@@ -28,21 +28,7 @@
 <div id="log"></div>
 <canvas id="screen" width="800" height="600"></canvas>
 
-<!-- CRITICAL: define Module BEFORE loading tinyemu.js -->
-<script>
-  window.Module = {
-    noInitialRun: true,          // prevents auto-run
-    onRuntimeInitialized() {     // signals FS is ready
-      console.log("TinyEMU runtime initialized");
-      window._runtimeReady = true;
-    }
-  };
-</script>
-
-<!-- Load TinyEMU -->
 <script src="wasm/tinyemu.js"></script>
-
-<!-- App logic -->
 <script src="app.js"></script>
 
 </body>
