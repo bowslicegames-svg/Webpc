@@ -1,76 +1,80 @@
 // app.js
-// Reassemble disk.raw from parts hosted at /wasm/parts/disk.raw.partNN and boot TinyEMU.
-// Writes parts directly into Emscripten FS to minimize memory pressure.
-// Expects tinyemu.js and wasm/vmlinux to be present at wasm/.
-// If your tinyemu build exposes a different start API, replace the startTinyEmu invocation accordingly.
+// Robust loader that waits for Emscripten Module.FS to be available before assembling disk parts
+// and starting TinyEMU. Works on iPad and other browsers where Module initializes asynchronously.
 
 (() => {
   // Configuration
   const PARTS_BASE = 'wasm/parts/disk.raw.part'; // e.g. wasm/parts/disk.raw.part00
   const PART_PAD = 2; // digits in suffix (00, 01, ...)
   const MAX_MISSING_IN_ROW = 1; // stop when this many consecutive parts are missing
-  const WRITE_CHUNK = 4 * 1024 * 1024; // 4MB writes (used when slicing arrays)
-  const KERNEL_PATH = 'wasm/vmlinux'; // kernel path inside Emscripten FS or URL depending on tinyemu init
+  const KERNEL_PATH = 'wasm/vmlinux'; // kernel path used by tinyemu init
+  const CANVAS_ID = 'screen';
 
-  // UI elements
+  // UI
   const $ = s => document.querySelector(s);
   const startBtn = $('#start-vm');
   const stopBtn = $('#stop-vm');
   const progressBar = $('#progress > i');
   const statusEl = $('#status');
   const logEl = $('#log');
-  const canvas = $('#screen');
+  const canvas = document.getElementById(CANVAS_ID);
 
   function log(...args) {
     const text = args.map(a => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ');
-    if (logEl) {
-      logEl.textContent += text + '\n';
-      logEl.scrollTop = logEl.scrollHeight;
-    }
+    if (logEl) { logEl.textContent += text + '\n'; logEl.scrollTop = logEl.scrollHeight; }
     console.log(...args);
   }
-
   function setStatus(s) { if (statusEl) statusEl.textContent = s; }
   function setProgressFraction(f) { if (progressBar) progressBar.style.width = Math.round(Math.max(0, Math.min(1, f)) * 100) + '%'; }
   function resetProgress() { setProgressFraction(0); }
 
-  // Wait for Emscripten Module to be ready (best-effort)
-  function waitForModuleReady(timeoutMs = 15000) {
-    return new Promise((resolve) => {
-      if (typeof Module !== 'undefined' && (Module.calledRun || Module.onRuntimeInitialized)) {
-        resolve(Module);
-        return;
-      }
-      let done = false;
-      if (typeof Module !== 'undefined') {
-        const prev = Module.onRuntimeInitialized;
-        Module.onRuntimeInitialized = function () {
-          if (typeof prev === 'function') prev();
-          if (!done) { done = true; resolve(Module); }
-        };
-      }
-      // fallback poll
+  // Wait until Module.FS exists and is usable. Returns Module when ready.
+  function waitForModuleFS(timeoutMs = 30000) {
+    return new Promise((resolve, reject) => {
       const start = Date.now();
+
+      function check() {
+        if (typeof Module !== 'undefined' && Module.FS && typeof Module.FS.write === 'function') {
+          resolve(Module);
+          return true;
+        }
+        return false;
+      }
+
+      if (check()) return;
+
+      // If tinyemu.js sets onRuntimeInitialized, hook it
+      try {
+        if (typeof Module !== 'undefined') {
+          const prev = Module.onRuntimeInitialized;
+          Module.onRuntimeInitialized = function () {
+            if (typeof prev === 'function') prev();
+            if (check()) return;
+          };
+        }
+      } catch (e) {
+        // ignore
+      }
+
       const iv = setInterval(() => {
-        if (typeof Module !== 'undefined' && (Module.calledRun || Module.onRuntimeInitialized)) {
+        if (check()) {
           clearInterval(iv);
-          if (!done) { done = true; resolve(Module); }
         } else if (Date.now() - start > timeoutMs) {
           clearInterval(iv);
-          if (!done) { done = true; resolve(Module); } // resolve anyway; some builds don't set flags
+          // final attempt: resolve anyway but caller must check FS
+          reject(new Error('Emscripten Module.FS did not become available within timeout'));
         }
       }, 200);
     });
   }
 
-  // Stream a fetched response body into Module.FS at fd starting at position
+  // Stream response body into Module.FS at fd starting at startPos
   async function streamResponseToFd(resp, fd, startPos, onChunk) {
     const reader = resp.body.getReader();
     let pos = startPos;
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      // value is Uint8Array
       Module.FS.write(fd, value, 0, value.length, pos);
       pos += value.length;
       if (onChunk) onChunk(value.length);
@@ -78,7 +82,6 @@
     return pos;
   }
 
-  // Fetch a single part and write it into the open fd at current position
   async function fetchPartToFd(url, fd, currentPos, onProgress) {
     const resp = await fetch(url);
     if (!resp.ok) {
@@ -93,14 +96,13 @@
   }
 
   // Assemble parts sequentially into /disk/disk.raw
-  async function assembleParts() {
+  async function assemblePartsToDisk() {
     if (typeof Module === 'undefined' || !Module.FS) {
       throw new Error('Emscripten Module.FS not available');
     }
 
     try { Module.FS.mkdir('/disk'); } catch (e) {}
 
-    // Remove existing file if present
     try { Module.FS.unlink('/disk/disk.raw'); } catch (e) {}
 
     const fd = Module.FS.open('/disk/disk.raw', 'w+');
@@ -152,39 +154,32 @@
     return '/disk/disk.raw';
   }
 
-  // TinyEMU boot helper: adapt to your tinyemu.js API if needed
-  function bootTinyEmuWithDisk(diskPath) {
+  // Boot TinyEMU with the assembled disk. Adapt this to your tinyemu API if needed.
+  function bootTinyEmu(diskPath) {
     setStatus('Booting TinyEMU...');
     log('Booting TinyEMU with disk:', diskPath);
 
-    // If your project exposes a startTinyEmu function, prefer it
+    // Common patterns: startTinyEmu, Module.start, TinyEmu constructor
     if (typeof startTinyEmu === 'function') {
       try {
-        startTinyEmu({
-          kernelUrl: KERNEL_PATH,
-          diskPath: diskPath,
-          canvas: canvas,
-        });
+        startTinyEmu({ kernelUrl: KERNEL_PATH, diskPath, canvas });
         return;
       } catch (e) {
         log('startTinyEmu threw:', e);
       }
     }
 
-    // If Module.start exists (some builds), try that
     if (typeof Module !== 'undefined' && typeof Module.start === 'function') {
       try {
-        Module.start({ kernel: KERNEL_PATH, disk: diskPath, canvas: canvas });
+        Module.start({ kernel: KERNEL_PATH, disk: diskPath, canvas });
         return;
       } catch (e) {
         log('Module.start threw:', e);
       }
     }
 
-    // If TinyEMU exposes a global TinyEmu class or function, attempt a common pattern
     if (typeof TinyEmu === 'function') {
       try {
-        // Example: new TinyEmu({canvas, kernel:..., disk:...})
         new TinyEmu({ canvas, kernel: KERNEL_PATH, disk: diskPath });
         return;
       } catch (e) {
@@ -192,41 +187,44 @@
       }
     }
 
-    // Last resort: inform user to adapt this function
-    log('No known TinyEMU start API found. Please adapt bootTinyEmuWithDisk() to call your tinyemu init.');
+    log('No known TinyEMU start API found. Please adapt bootTinyEmu() to call your tinyemu init.');
     setStatus('Disk prepared. Adapt app.js to start TinyEMU.');
   }
 
-  // Start VM handler
+  // Start handler
   async function onStart() {
     startBtn.disabled = true;
-    setStatus('Preparing disk image...');
+    setStatus('Waiting for runtime...');
     resetProgress();
     log('Start VM clicked');
 
     try {
-      await waitForModuleReady().catch(() => {
-        log('Module readiness timed out or not signaled; continuing anyway.');
+      // Wait for Module.FS to be available
+      await waitForModuleFS().catch(err => {
+        // Provide a clear error if FS never appears
+        throw new Error('Emscripten runtime did not initialize: ' + (err && err.message ? err.message : 'timeout'));
       });
 
-      const diskPath = await assembleParts();
+      // Assemble parts into disk
+      const diskPath = await assemblePartsToDisk();
 
-      // Small delay to ensure FS is stable on some browsers
+      // Small delay to ensure FS stability on some browsers
       await new Promise(r => setTimeout(r, 200));
 
-      bootTinyEmuWithDisk(diskPath);
+      // Boot TinyEMU
+      bootTinyEmu(diskPath);
 
       stopBtn.disabled = false;
       setStatus('VM running (or disk prepared)');
     } catch (err) {
-      log('Error:', err && err.message ? err.message : err);
-      setStatus('Error: ' + (err && err.message ? err.message : String(err)));
+      log('Error during assembly or start:', err && err.message ? err.message : err);
+      setStatus('Error during assembly or start: ' + (err && err.message ? err.message : String(err)));
       startBtn.disabled = false;
       resetProgress();
     }
   }
 
-  // Stop VM handler (best-effort)
+  // Stop handler
   function onStop() {
     log('Stop VM clicked');
     if (typeof stopTinyEmu === 'function') {
