@@ -1,135 +1,198 @@
-(() => {
-  const PARTS_BASE = "wasm/parts/disk.raw.part";
-  const PART_PAD = 2;
-  const KERNEL_PATH = "wasm/vmlinux";
+// docs/app.js
+// TinyEMU loader + Linux boot helper for GitHub Pages
 
-  const $ = s => document.querySelector(s);
-  const startBtn = $("#start-vm");
-  const stopBtn = $("#stop-vm");
-  const progressBar = $("#progress > i");
-  const statusEl = $("#status");
-  const logEl = $("#log");
-  const canvas = $("#screen");
+const vmOutput = document.getElementById("vm-output");
+const startBtn = document.getElementById("start-vm");
+const renderBtn = document.getElementById("render");
+const canvas = document.getElementById("screen");
 
-  let Module = null; // will be set by TinyEmuModule()
+function appendVmLine(line) {
+  vmOutput.textContent += line + "\n";
+  vmOutput.scrollTop = vmOutput.scrollHeight;
+}
 
-  function log(msg) {
-    logEl.textContent += msg + "\n";
-    logEl.scrollTop = logEl.scrollHeight;
-    console.log(msg);
+window.addEventListener("error", e => {
+  appendVmLine("Global error: " + (e.message || e));
+});
+window.addEventListener("unhandledrejection", e => {
+  appendVmLine("Unhandled rejection: " + (e.reason?.message || e.reason));
+});
+
+async function loadScript(path) {
+  return new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = path;
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error("Failed to load script: " + path));
+    document.head.appendChild(s);
+  });
+}
+
+async function fetchArrayBuffer(path) {
+  appendVmLine("Fetching " + path);
+  const resp = await fetch(path, { cache: "no-store" });
+  appendVmLine("HTTP " + resp.status + " " + resp.statusText);
+  if (!resp.ok) throw new Error("Failed to fetch " + path + " HTTP " + resp.status);
+  const ab = await resp.arrayBuffer();
+  appendVmLine("Fetched bytes: " + ab.byteLength);
+  return ab;
+}
+
+function installConsoleHooks(Module) {
+  // If the module prints to stdout/stderr via Module.print/printErr, they are already set below.
+  // If the module exposes a serial callback, you can hook it here.
+}
+
+function renderFramebuffer(Module, fbPtr, width, height) {
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  canvas.width = width;
+  canvas.height = height;
+  const image = ctx.createImageData(width, height);
+  const heap = Module.HEAPU8.buffer;
+  const fbBytes = new Uint8Array(heap, fbPtr, width * height * 4);
+  image.data.set(fbBytes);
+  ctx.putImageData(image, 0, 0);
+}
+
+async function startTinyEmuAndBoot() {
+  vmOutput.textContent = "";
+  appendVmLine("Loading tinyemu.js...");
+  await loadScript("wasm/tinyemu.js");
+  appendVmLine("tinyemu.js loaded.");
+
+  // Fetch wasm manually to avoid MIME streaming issues
+  const wasmBinary = await fetchArrayBuffer("wasm/tinyemu.wasm");
+  appendVmLine("tinyemu.wasm fetched.");
+
+  // Provide print hooks so module output goes to the page
+  const moduleConfig = {
+    wasmBinary,
+    print: text => appendVmLine(String(text)),
+    printErr: text => appendVmLine("ERR: " + String(text)),
+    noInitialRun: true
+  };
+
+  appendVmLine("Instantiating TinyEmuModule...");
+  const Module = await window.TinyEmuModule(moduleConfig);
+  appendVmLine("TinyEmuModule instantiated.");
+
+  installConsoleHooks(Module);
+
+  // Fetch kernel and rootfs from wasm/ folder
+  // Expected filenames: wasm/vmlinux and wasm/rootfs.cpio
+  let kernelBuf, rootfsBuf;
+  try {
+    kernelBuf = await fetchArrayBuffer("wasm/vmlinux");
+    rootfsBuf = await fetchArrayBuffer("wasm/rootfs.cpio");
+  } catch (err) {
+    appendVmLine("Warning: kernel or rootfs not found: " + err.message);
+    appendVmLine("If you only want to test the module, upload vmlinux and rootfs.cpio to docs/wasm/");
+    // Still continue so user can inspect Module exports
   }
-  function setStatus(s) { statusEl.textContent = s; }
-  function setProgress(f) { progressBar.style.width = (f * 100) + "%"; }
 
-  async function initTinyEmu() {
-    if (Module) return Module; // already initialized
-
-    setStatus("Downloading VM module...");
-    log("Calling TinyEmuModule()...");
-
-    Module = await TinyEmuModule({
-      noInitialRun: true,
-      print: msg => log(msg),
-      printErr: msg => log("ERR: " + msg),
-      onRuntimeInitialized() {
-        log("TinyEMU runtime initialized");
-      }
-    });
-
-    if (!Module.FS) throw new Error("TinyEMU Module.FS not available after init");
-    log("Module.FS ready");
-    return Module;
-  }
-
-  async function streamPart(url, fd, pos) {
-    const resp = await fetch(url);
-    if (!resp.ok) throw new Error("Missing part: " + url);
-
-    const reader = resp.body.getReader();
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      Module.FS.write(fd, value, 0, value.length, pos);
-      pos += value.length;
+  // Write files into Emscripten FS if present
+  try {
+    if (kernelBuf) {
+      try { Module.FS.mkdir("/boot"); } catch (e) {}
+      Module.FS.writeFile("/boot/vmlinux", new Uint8Array(kernelBuf));
+      appendVmLine("Wrote /boot/vmlinux");
     }
-    return pos;
+    if (rootfsBuf) {
+      try { Module.FS.mkdir("/rootfs"); } catch (e) {}
+      Module.FS.writeFile("/rootfs/rootfs.cpio", new Uint8Array(rootfsBuf));
+      appendVmLine("Wrote /rootfs/rootfs.cpio");
+    }
+  } catch (err) {
+    appendVmLine("FS write error: " + err.message);
   }
 
-  async function assembleDisk() {
-    log("Assembling disk...");
-    setStatus("Assembling disk...");
-    setProgress(0);
+  // Prepare emulator args
+  // If you have initramfs (rootfs.cpio) use -initrd; if you have disk image use -drive style args
+  const args = [];
+  if (kernelBuf) {
+    args.push("-kernel", "/boot/vmlinux");
+  }
+  if (rootfsBuf) {
+    args.push("-initrd", "/rootfs/rootfs.cpio");
+  }
+  // Use serial console on ttyS0 and no graphical window
+  args.push("-nographic");
+  args.push("-append", "console=ttyS0 root=/dev/ram rw");
 
-    try { Module.FS.mkdir("/disk"); } catch {}
-    try { Module.FS.unlink("/disk/disk.raw"); } catch {}
+  appendVmLine("Emulator args: " + args.join(" "));
 
-    const fd = Module.FS.open("/disk/disk.raw", "w+");
+  // Build argv in Emscripten memory and call main
+  // Many modularized Emscripten builds export _main
+  try {
+    const argc = args.length + 1;
+    const argvPtrs = [];
+    const argvBuffer = Module._malloc((argc + 1) * 4);
+    let ptrOffset = argvBuffer;
 
-    let pos = 0;
-    let index = 0;
-
-    while (true) {
-      const suffix = String(index).padStart(PART_PAD, "0");
-      const url = `${PARTS_BASE}${suffix}`;
-
-      log("Fetching " + url);
-
-      try {
-        pos = await streamPart(url, fd, pos);
-      } catch {
-        log("No more parts.");
-        break;
-      }
-
-      index++;
-      setProgress(Math.min(0.98, pos / (1024 * 1024 * 1024)));
+    function writeStringToHeap(s) {
+      const buf = Module._malloc(s.length + 1);
+      Module.stringToUTF8(s, buf, s.length + 1);
+      return buf;
     }
 
-    Module.FS.close(fd);
-    setProgress(1);
-    setStatus("Disk ready");
-    return "/disk/disk.raw";
+    // program name
+    const progPtr = writeStringToHeap("tinyemu");
+    Module.setValue(ptrOffset, progPtr, "i32");
+    ptrOffset += 4;
+
+    for (let i = 0; i < args.length; i++) {
+      const p = writeStringToHeap(args[i]);
+      Module.setValue(ptrOffset, p, "i32");
+      ptrOffset += 4;
+      argvPtrs.push(p);
+    }
+    Module.setValue(ptrOffset, 0, "i32"); // null terminator
+
+    appendVmLine("Calling _main with argc=" + argc);
+    // If your build exports a different entry point, adjust this call
+    Module._main(argc, argvBuffer);
+    appendVmLine("_main returned (if it returns).");
+  } catch (err) {
+    appendVmLine("Error calling main: " + err.message);
   }
 
-  function bootTinyEmu(diskPath) {
-    log("Booting TinyEMU...");
-    setStatus("Booting TinyEMU...");
-
-    // TinyEmuModule’s run() already wired _main; we just call main via ccall
-    if (Module.ccall) {
-      Module.ccall("main", "number", ["string", "string"], [KERNEL_PATH, diskPath]);
-      stopBtn.disabled = false;
-      setStatus("VM running");
+  // If the build exposes a framebuffer pointer and size, render it periodically
+  // Common pattern: module exports a function to get framebuffer pointer/size; adapt names if different
+  try {
+    if (Module._get_framebuffer_ptr && Module._get_framebuffer_width && Module._get_framebuffer_height) {
+      const fbPtr = Module._get_framebuffer_ptr();
+      const w = Module._get_framebuffer_width();
+      const h = Module._get_framebuffer_height();
+      appendVmLine("Framebuffer at " + fbPtr + " size " + w + "x" + h);
+      function loopRender() {
+        try {
+          renderFramebuffer(Module, fbPtr, w, h);
+        } catch (e) {}
+        requestAnimationFrame(loopRender);
+      }
+      loopRender();
     } else {
-      log("ERROR: Module.ccall not available; adapt bootTinyEmu to your build.");
-      setStatus("TinyEMU start function missing");
+      appendVmLine("No framebuffer exports detected. If you want graphics, rebuild with framebuffer exports.");
     }
+  } catch (err) {
+    appendVmLine("Framebuffer check error: " + err.message);
   }
+}
 
-  async function startVM() {
-    startBtn.disabled = true;
-
-    try {
-      await initTinyEmu();
-      const diskPath = await assembleDisk();
-      bootTinyEmu(diskPath);
-    } catch (err) {
-      log("ERROR: " + err.message);
-      setStatus("Error: " + err.message);
-      startBtn.disabled = false;
-    }
+startBtn.addEventListener("click", async () => {
+  try {
+    await startTinyEmuAndBoot();
+  } catch (err) {
+    appendVmLine("Failed to start VM: " + err.message);
   }
+});
 
-  function stopVM() {
-    log("Stopping VM...");
-    // Your build may expose a stop function; if not, reload is the only full stop.
-    stopBtn.disabled = true;
-    startBtn.disabled = false;
-    setStatus("Stopped");
-  }
-
-  startBtn.addEventListener("click", startVM);
-  stopBtn.addEventListener("click", stopVM);
-
-  log("app.js loaded; press Start VM to init TinyEMU and assemble disk.");
-})();
+renderBtn.addEventListener("click", () => {
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#111";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = "#0f0";
+  ctx.font = "16px monospace";
+  ctx.fillText("Renderer: placeholder frame", 10, 30);
+});
