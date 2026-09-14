@@ -1,24 +1,52 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
+#include <stdint.h>
 #include <time.h>
 
+// Simple framebuffer API for optional graphics
+#define FB_W 320
+#define FB_H 200
+static uint32_t framebuffer[FB_W * FB_H];
+
+// Expose functions for JS to call
+uint32_t* get_framebuffer_ptr() { return framebuffer; }
+int get_framebuffer_width() { return FB_W; }
+int get_framebuffer_height() { return FB_H; }
+
+// Optional key hook
+static int last_key = 0;
+void vm_key(int k) { last_key = k; printf("[VM] key %d\n", k); fflush(stdout); }
+
+static void draw_frame(int f) {
+  uint32_t color = 0xFF000000 | ((f * 37) & 0x00FFFFFF);
+  for (int i = 0; i < FB_W * FB_H; ++i) framebuffer[i] = color;
+}
+
 int main(int argc, char** argv) {
-    printf("TinyEMU WASM demo: booting minimal VM\\n");
-    printf("Initializing console...\\n");
+  printf("TinyEMU WASM demo stub: starting\n");
+  fflush(stdout);
 
-    for (int i = 0; i < 5; ++i) {
-        printf("Boot step %d/5\\n", i+1);
-        fflush(stdout);
-        // simple delay loop to simulate work
-        volatile unsigned long t = 0;
-        for (unsigned long j = 0; j < 20000000UL; ++j) t += j;
+  for (int i = 0; i < 5; ++i) {
+    printf("Boot step %d/5\n", i+1);
+    fflush(stdout);
+    volatile unsigned long t = 0;
+    for (unsigned long j = 0; j < 20000000UL; ++j) t += j;
+  }
+
+  printf("Entering main loop\n");
+  fflush(stdout);
+
+  int frame = 0;
+  while (1) {
+    draw_frame(frame++);
+    if (last_key) {
+      printf("Key seen: %d\n", last_key);
+      last_key = 0;
+      fflush(stdout);
     }
+    struct timespec ts = {0, 33 * 1000 * 1000}; // ~33ms
+    nanosleep(&ts, NULL);
+  }
 
-    printf("TinyEMU WASM demo: VM ready.\\n");
-    printf("You can replace this program with a real emulator core.\\n");
-
-    // Keep process alive so the module does not immediately exit when used interactively
-    // Emscripten will return to JS after main returns. For demo we return.
-    return 0;
+  return 0;
 }
