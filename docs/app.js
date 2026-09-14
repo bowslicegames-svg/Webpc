@@ -1,6 +1,6 @@
 // docs/app.js
 // TinyEMU loader + Linux boot helper for GitHub Pages
-// Minimal edits: robust module detection, wait for runtime, assemble /wasm/parts/disk.raw, and safe boot fallbacks.
+// Minimal edits: use wasm/vmlinux and assemble /wasm/parts/disk.raw instead of rootfs.cpio
 
 const vmOutput = document.getElementById("vm-output");
 const startBtn = document.getElementById("start-vm");
@@ -41,8 +41,10 @@ async function fetchArrayBuffer(path) {
 
 function installConsoleHooks(Module) {
   // Hook Emscripten-style prints if present
-  if (Module.print) Module.print = text => appendVmLine(String(text));
-  if (Module.printErr) Module.printErr = text => appendVmLine("ERR: " + String(text));
+  if (Module) {
+    if (Module.print) Module.print = text => appendVmLine(String(text));
+    if (Module.printErr) Module.printErr = text => appendVmLine("ERR: " + String(text));
+  }
   // If the module exposes a serial callback, hook it here.
 }
 
@@ -71,7 +73,6 @@ function initModule(moduleConfig) {
     if (typeof window.TinyEmuModule === "function") {
       try {
         const maybePromise = window.TinyEmuModule(moduleConfig);
-        // Some modularized builds return a Promise, some return Module synchronously
         if (maybePromise && typeof maybePromise.then === "function") {
           maybePromise.then(mod => resolve(mod)).catch(reject);
         } else {
@@ -85,17 +86,14 @@ function initModule(moduleConfig) {
 
     // Classic build: set global Module and wait for onRuntimeInitialized
     try {
-      // Preserve any existing Module object
       const existing = window.Module || {};
       const merged = Object.assign({}, existing, moduleConfig);
       window.Module = merged;
 
-      // If runtime already initialized, resolve immediately
       if (window.Module && window.Module.calledRun) {
         return resolve(window.Module);
       }
 
-      // Install a one-time onRuntimeInitialized
       const prev = window.Module.onRuntimeInitialized;
       window.Module.onRuntimeInitialized = function () {
         try {
@@ -104,9 +102,6 @@ function initModule(moduleConfig) {
           resolve(window.Module);
         }
       };
-
-      // Some classic builds call Module.run() automatically; others wait.
-      // If the script hasn't been loaded yet, the onRuntimeInitialized will be called later.
     } catch (err) {
       reject(err);
     }
@@ -125,10 +120,17 @@ async function assembleDiskFromParts(Module) {
   // Create or truncate the target file
   let fd;
   try {
-    fd = Module.FS.open("/rootfs/disk.raw", "w+");
+    // Use writeFile to create an empty file first if open fails on some builds
+    try { Module.FS.unlink("/rootfs/disk.raw"); } catch (e) {}
+    Module.FS.writeFile("/rootfs/disk.raw", new Uint8Array(0));
+    fd = Module.FS.open("/rootfs/disk.raw", "r+");
   } catch (e) {
-    appendVmLine("Failed to open /rootfs/disk.raw for writing: " + e.message);
-    throw e;
+    try {
+      fd = Module.FS.open("/rootfs/disk.raw", "w+");
+    } catch (e2) {
+      appendVmLine("Failed to open /rootfs/disk.raw for writing: " + e2.message);
+      throw e2;
+    }
   }
 
   let pos = 0;
@@ -149,6 +151,26 @@ async function assembleDiskFromParts(Module) {
     }
 
     // Stream the part into FS in chunks
+    if (!resp.body || !resp.body.getReader) {
+      // Fallback: read whole arrayBuffer
+      const ab = await resp.arrayBuffer();
+      const chunk = new Uint8Array(ab);
+      try {
+        Module.FS.write(fd, chunk, 0, chunk.length, pos);
+      } catch (e) {
+        // fallback to read/concat/writeFile
+        const existing = Module.FS.readFile("/rootfs/disk.raw", { encoding: "binary" });
+        const combined = new Uint8Array(existing.length + chunk.length);
+        combined.set(existing, 0);
+        combined.set(chunk, existing.length);
+        Module.FS.writeFile("/rootfs/disk.raw", combined);
+        pos = combined.length;
+      }
+      pos += chunk.length;
+      index++;
+      continue;
+    }
+
     const reader = resp.body.getReader();
     while (true) {
       const { done, value } = await reader.read();
@@ -157,7 +179,7 @@ async function assembleDiskFromParts(Module) {
       try {
         Module.FS.write(fd, chunk, 0, chunk.length, pos);
       } catch (e) {
-        // Some Emscripten builds expect write to receive a typed array differently; try writeFile fallback
+        // Some Emscripten builds expect write to be used differently; fallback to read/concat/writeFile
         try {
           const existing = Module.FS.readFile("/rootfs/disk.raw", { encoding: "binary" });
           const combined = new Uint8Array(existing.length + chunk.length);
@@ -215,7 +237,6 @@ async function startTinyEmuAndBoot() {
   // Wait for FS to be available
   if (!Module.FS) {
     appendVmLine("Waiting for Module.FS to be available...");
-    // Some builds expose FS only after runtime; give a short timeout loop
     const start = Date.now();
     while (!Module.FS && Date.now() - start < 5000) {
       await new Promise(r => setTimeout(r, 50));
@@ -226,7 +247,7 @@ async function startTinyEmuAndBoot() {
     }
   }
 
-  // Fetch kernel and assemble disk.raw from /wasm/parts/
+  // Fetch kernel (vmlinux)
   let kernelBuf;
   try {
     kernelBuf = await fetchArrayBuffer("wasm/vmlinux");
@@ -245,10 +266,13 @@ async function startTinyEmuAndBoot() {
     appendVmLine("FS write error (kernel): " + err.message);
   }
 
-  // Assemble disk.raw from parts. If no parts exist, this will create zero bytes and we will still attempt to boot.
+  // Assemble disk.raw from /wasm/parts/
   let diskSize = 0;
   try {
     diskSize = await assembleDiskFromParts(Module);
+    if (diskSize === 0) {
+      appendVmLine("No disk parts found; disk.raw size is 0. Boot may fail if disk is required.");
+    }
   } catch (err) {
     appendVmLine("Disk assembly failed: " + (err.message || err));
   }
@@ -266,9 +290,8 @@ async function startTinyEmuAndBoot() {
 
   // Build argv in Emscripten memory and call main
   try {
-    // Ensure _malloc or callMain is available
-    if (!Module._malloc && !Module.cwrap && !Module.callMain) {
-      appendVmLine("Warning: Module runtime helpers not found (_malloc/ccall/callMain). Attempting to continue.");
+    if (!Module._malloc && !Module.callMain && !Module.cwrap) {
+      appendVmLine("Warning: Module runtime helpers not found (_malloc/callMain). Attempting to continue.");
     }
 
     // If callMain exists (classic builds), prefer it
