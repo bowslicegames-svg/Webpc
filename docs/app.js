@@ -1,5 +1,6 @@
 // docs/app.js
 // TinyEMU loader + Linux boot helper for GitHub Pages
+// Minimal edits: robust module detection, wait for runtime, assemble /wasm/parts/disk.raw, and safe boot fallbacks.
 
 const vmOutput = document.getElementById("vm-output");
 const startBtn = document.getElementById("start-vm");
@@ -39,8 +40,10 @@ async function fetchArrayBuffer(path) {
 }
 
 function installConsoleHooks(Module) {
-  // If the module prints to stdout/stderr via Module.print/printErr, they are already set below.
-  // If the module exposes a serial callback, you can hook it here.
+  // Hook Emscripten-style prints if present
+  if (Module.print) Module.print = text => appendVmLine(String(text));
+  if (Module.printErr) Module.printErr = text => appendVmLine("ERR: " + String(text));
+  // If the module exposes a serial callback, hook it here.
 }
 
 function renderFramebuffer(Module, fbPtr, width, height) {
@@ -53,6 +56,130 @@ function renderFramebuffer(Module, fbPtr, width, height) {
   const fbBytes = new Uint8Array(heap, fbPtr, width * height * 4);
   image.data.set(fbBytes);
   ctx.putImageData(image, 0, 0);
+}
+
+/**
+ * Initialize the Emscripten module in a way that supports:
+ *  - modularized builds (TinyEmuModule factory)
+ *  - classic builds (global Module + onRuntimeInitialized)
+ *
+ * Returns a Promise that resolves to the initialized Module object.
+ */
+function initModule(moduleConfig) {
+  return new Promise((resolve, reject) => {
+    // Modularized build: TinyEmuModule is a function that returns a Promise/Module
+    if (typeof window.TinyEmuModule === "function") {
+      try {
+        const maybePromise = window.TinyEmuModule(moduleConfig);
+        // Some modularized builds return a Promise, some return Module synchronously
+        if (maybePromise && typeof maybePromise.then === "function") {
+          maybePromise.then(mod => resolve(mod)).catch(reject);
+        } else {
+          resolve(maybePromise);
+        }
+      } catch (err) {
+        reject(err);
+      }
+      return;
+    }
+
+    // Classic build: set global Module and wait for onRuntimeInitialized
+    try {
+      // Preserve any existing Module object
+      const existing = window.Module || {};
+      const merged = Object.assign({}, existing, moduleConfig);
+      window.Module = merged;
+
+      // If runtime already initialized, resolve immediately
+      if (window.Module && window.Module.calledRun) {
+        return resolve(window.Module);
+      }
+
+      // Install a one-time onRuntimeInitialized
+      const prev = window.Module.onRuntimeInitialized;
+      window.Module.onRuntimeInitialized = function () {
+        try {
+          if (typeof prev === "function") prev();
+        } finally {
+          resolve(window.Module);
+        }
+      };
+
+      // Some classic builds call Module.run() automatically; others wait.
+      // If the script hasn't been loaded yet, the onRuntimeInitialized will be called later.
+    } catch (err) {
+      reject(err);
+    }
+  });
+}
+
+async function assembleDiskFromParts(Module) {
+  appendVmLine("Assembling disk.raw from /wasm/parts/ ...");
+  try {
+    try { Module.FS.mkdir("/rootfs"); } catch (e) {}
+  } catch (e) {
+    appendVmLine("FS not available to create /rootfs: " + e.message);
+    throw new Error("FS not available");
+  }
+
+  // Create or truncate the target file
+  let fd;
+  try {
+    fd = Module.FS.open("/rootfs/disk.raw", "w+");
+  } catch (e) {
+    appendVmLine("Failed to open /rootfs/disk.raw for writing: " + e.message);
+    throw e;
+  }
+
+  let pos = 0;
+  let index = 0;
+  while (true) {
+    const partName = `wasm/parts/disk.raw.part${String(index).padStart(2, "0")}`;
+    appendVmLine("Attempting fetch: " + partName);
+    let resp;
+    try {
+      resp = await fetch(partName);
+    } catch (e) {
+      appendVmLine("Fetch error for " + partName + ": " + e.message);
+      break;
+    }
+    if (!resp.ok) {
+      appendVmLine("Part not found (HTTP " + resp.status + "): " + partName);
+      break;
+    }
+
+    // Stream the part into FS in chunks
+    const reader = resp.body.getReader();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunk = value instanceof Uint8Array ? value : new Uint8Array(value);
+      try {
+        Module.FS.write(fd, chunk, 0, chunk.length, pos);
+      } catch (e) {
+        // Some Emscripten builds expect write to receive a typed array differently; try writeFile fallback
+        try {
+          const existing = Module.FS.readFile("/rootfs/disk.raw", { encoding: "binary" });
+          const combined = new Uint8Array(existing.length + chunk.length);
+          combined.set(existing, 0);
+          combined.set(chunk, existing.length);
+          Module.FS.writeFile("/rootfs/disk.raw", combined);
+          pos = combined.length;
+        } catch (e2) {
+          Module.FS.close(fd);
+          appendVmLine("Failed to write chunk: " + e2.message);
+          throw e2;
+        }
+      }
+      pos += chunk.length;
+    }
+
+    index++;
+  }
+
+  try { Module.FS.close(fd); } catch (e) {}
+  appendVmLine("disk.raw assembled, size " + pos + " bytes");
+  return pos;
 }
 
 async function startTinyEmuAndBoot() {
@@ -73,60 +200,89 @@ async function startTinyEmuAndBoot() {
     noInitialRun: true
   };
 
-  appendVmLine("Instantiating TinyEmuModule...");
-  const Module = await window.TinyEmuModule(moduleConfig);
-  appendVmLine("TinyEmuModule instantiated.");
+  appendVmLine("Instantiating module...");
+  let Module;
+  try {
+    Module = await initModule(moduleConfig);
+  } catch (err) {
+    appendVmLine("Module instantiation failed: " + (err.message || err));
+    throw err;
+  }
+  appendVmLine("Module instantiated.");
 
   installConsoleHooks(Module);
 
-  // Fetch kernel and rootfs from wasm/ folder
-  // Expected filenames: wasm/vmlinux and wasm/rootfs.cpio
-  let kernelBuf, rootfsBuf;
+  // Wait for FS to be available
+  if (!Module.FS) {
+    appendVmLine("Waiting for Module.FS to be available...");
+    // Some builds expose FS only after runtime; give a short timeout loop
+    const start = Date.now();
+    while (!Module.FS && Date.now() - start < 5000) {
+      await new Promise(r => setTimeout(r, 50));
+    }
+    if (!Module.FS) {
+      appendVmLine("Module.FS not available after wait.");
+      // Continue anyway; later operations will fail with clearer messages
+    }
+  }
+
+  // Fetch kernel and assemble disk.raw from /wasm/parts/
+  let kernelBuf;
   try {
     kernelBuf = await fetchArrayBuffer("wasm/vmlinux");
-    rootfsBuf = await fetchArrayBuffer("wasm/rootfs.cpio");
   } catch (err) {
-    appendVmLine("Warning: kernel or rootfs not found: " + err.message);
-    appendVmLine("If you only want to test the module, upload vmlinux and rootfs.cpio to docs/wasm/");
-    // Still continue so user can inspect Module exports
+    appendVmLine("Warning: kernel not found: " + err.message);
+    appendVmLine("Upload vmlinux to docs/wasm/ to boot a kernel.");
+    return;
   }
 
-  // Write files into Emscripten FS if present
+  // Write kernel into FS
   try {
-    if (kernelBuf) {
-      try { Module.FS.mkdir("/boot"); } catch (e) {}
-      Module.FS.writeFile("/boot/vmlinux", new Uint8Array(kernelBuf));
-      appendVmLine("Wrote /boot/vmlinux");
-    }
-    if (rootfsBuf) {
-      try { Module.FS.mkdir("/rootfs"); } catch (e) {}
-      Module.FS.writeFile("/rootfs/rootfs.cpio", new Uint8Array(rootfsBuf));
-      appendVmLine("Wrote /rootfs/rootfs.cpio");
-    }
+    try { Module.FS.mkdir("/boot"); } catch (e) {}
+    Module.FS.writeFile("/boot/vmlinux", new Uint8Array(kernelBuf));
+    appendVmLine("Wrote /boot/vmlinux");
   } catch (err) {
-    appendVmLine("FS write error: " + err.message);
+    appendVmLine("FS write error (kernel): " + err.message);
   }
 
-  // Prepare emulator args
-  // If you have initramfs (rootfs.cpio) use -initrd; if you have disk image use -drive style args
-  const args = [];
-  if (kernelBuf) {
-    args.push("-kernel", "/boot/vmlinux");
+  // Assemble disk.raw from parts. If no parts exist, this will create zero bytes and we will still attempt to boot.
+  let diskSize = 0;
+  try {
+    diskSize = await assembleDiskFromParts(Module);
+  } catch (err) {
+    appendVmLine("Disk assembly failed: " + (err.message || err));
   }
-  if (rootfsBuf) {
-    args.push("-initrd", "/rootfs/rootfs.cpio");
-  }
-  // Use serial console on ttyS0 and no graphical window
-  args.push("-nographic");
-  args.push("-append", "console=ttyS0 root=/dev/ram rw");
+
+  // Prepare emulator args for disk.raw boot
+  const args = [
+    "-kernel", "/boot/vmlinux",
+    "-drive", "file=/rootfs/disk.raw,format=raw,if=none,id=hd0",
+    "-device", "virtio-blk-device,drive=hd0",
+    "-append", "console=ttyS0 root=/dev/vda rw",
+    "-nographic"
+  ];
 
   appendVmLine("Emulator args: " + args.join(" "));
 
   // Build argv in Emscripten memory and call main
-  // Many modularized Emscripten builds export _main
   try {
+    // Ensure _malloc or callMain is available
+    if (!Module._malloc && !Module.cwrap && !Module.callMain) {
+      appendVmLine("Warning: Module runtime helpers not found (_malloc/ccall/callMain). Attempting to continue.");
+    }
+
+    // If callMain exists (classic builds), prefer it
+    if (typeof Module.callMain === "function") {
+      appendVmLine("Using Module.callMain (classic build).");
+      Module.callMain(["tinyemu", ...args]);
+      appendVmLine("Module.callMain returned (if it returns).");
+      return;
+    }
+
+    // Otherwise build argv manually and call _main
+    if (!Module._malloc) throw new Error("_malloc not available on Module; cannot build argv");
+
     const argc = args.length + 1;
-    const argvPtrs = [];
     const argvBuffer = Module._malloc((argc + 1) * 4);
     let ptrOffset = argvBuffer;
 
@@ -145,20 +301,21 @@ async function startTinyEmuAndBoot() {
       const p = writeStringToHeap(args[i]);
       Module.setValue(ptrOffset, p, "i32");
       ptrOffset += 4;
-      argvPtrs.push(p);
     }
     Module.setValue(ptrOffset, 0, "i32"); // null terminator
 
     appendVmLine("Calling _main with argc=" + argc);
-    // If your build exports a different entry point, adjust this call
-    Module._main(argc, argvBuffer);
-    appendVmLine("_main returned (if it returns).");
+    if (typeof Module._main === "function") {
+      Module._main(argc, argvBuffer);
+      appendVmLine("_main returned (if it returns).");
+    } else {
+      appendVmLine("Module._main not found; cannot call main.");
+    }
   } catch (err) {
-    appendVmLine("Error calling main: " + err.message);
+    appendVmLine("Error calling main: " + (err.message || err));
   }
 
-  // If the build exposes a framebuffer pointer and size, render it periodically
-  // Common pattern: module exports a function to get framebuffer pointer/size; adapt names if different
+  // Framebuffer rendering (if exported)
   try {
     if (Module._get_framebuffer_ptr && Module._get_framebuffer_width && Module._get_framebuffer_height) {
       const fbPtr = Module._get_framebuffer_ptr();
@@ -184,7 +341,7 @@ startBtn.addEventListener("click", async () => {
   try {
     await startTinyEmuAndBoot();
   } catch (err) {
-    appendVmLine("Failed to start VM: " + err.message);
+    appendVmLine("Failed to start VM: " + (err.message || err));
   }
 });
 
