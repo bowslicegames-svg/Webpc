@@ -8,12 +8,12 @@
 static uint32_t framebuffer[FB_W * FB_H];
 
 // These MUST match the exported names in emcc
-uint32_t* _get_framebuffer_ptr() { return framebuffer; }
-int _get_framebuffer_width() { return FB_W; }
-int _get_framebuffer_height() { return FB_H; }
+uint32_t* get_framebuffer_ptr() { return framebuffer; }
+int get_framebuffer_width() { return FB_W; }
+int get_framebuffer_height() { return FB_H; }
 
 static int last_key = 0;
-void _vm_key(int k) { last_key = k; printf("[VM] key %d\n", k); fflush(stdout); }
+void vm_key(int k) { last_key = k; printf("[VM] key %d\n", k); fflush(stdout); }
 
 static void draw_frame(int f) {
   uint32_t color = 0xFF000000 | ((f * 37) & 0x00FFFFFF);
