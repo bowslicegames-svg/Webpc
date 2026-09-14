@@ -1,6 +1,6 @@
 // docs/app.js
 // TinyEMU loader + Linux boot helper for GitHub Pages
-// Minimal edits: use wasm/vmlinux and assemble /wasm/parts/disk.raw instead of rootfs.cpio
+// Minimal edits: use wasm/vmlinux and assemble wasm/parts/disk.raw.part00..part30 into /rootfs/disk.raw
 
 const vmOutput = document.getElementById("vm-output");
 const startBtn = document.getElementById("start-vm");
@@ -40,12 +40,13 @@ async function fetchArrayBuffer(path) {
 }
 
 function installConsoleHooks(Module) {
-  // Hook Emscripten-style prints if present
-  if (Module) {
-    if (Module.print) Module.print = text => appendVmLine(String(text));
-    if (Module.printErr) Module.printErr = text => appendVmLine("ERR: " + String(text));
+  if (!Module) return;
+  if (Module.print) Module.print = text => appendVmLine(String(text));
+  if (Module.printErr) Module.printErr = text => appendVmLine("ERR: " + String(text));
+  // Hook serial callback if module exposes one (example: Module._serial_write)
+  if (typeof Module._serial_write === "function") {
+    // optional: wrap or expose to page
   }
-  // If the module exposes a serial callback, hook it here.
 }
 
 function renderFramebuffer(Module, fbPtr, width, height) {
@@ -60,16 +61,9 @@ function renderFramebuffer(Module, fbPtr, width, height) {
   ctx.putImageData(image, 0, 0);
 }
 
-/**
- * Initialize the Emscripten module in a way that supports:
- *  - modularized builds (TinyEmuModule factory)
- *  - classic builds (global Module + onRuntimeInitialized)
- *
- * Returns a Promise that resolves to the initialized Module object.
- */
 function initModule(moduleConfig) {
   return new Promise((resolve, reject) => {
-    // Modularized build: TinyEmuModule is a function that returns a Promise/Module
+    // Modularized build
     if (typeof window.TinyEmuModule === "function") {
       try {
         const maybePromise = window.TinyEmuModule(moduleConfig);
@@ -84,7 +78,7 @@ function initModule(moduleConfig) {
       return;
     }
 
-    // Classic build: set global Module and wait for onRuntimeInitialized
+    // Classic build
     try {
       const existing = window.Module || {};
       const merged = Object.assign({}, existing, moduleConfig);
@@ -96,11 +90,7 @@ function initModule(moduleConfig) {
 
       const prev = window.Module.onRuntimeInitialized;
       window.Module.onRuntimeInitialized = function () {
-        try {
-          if (typeof prev === "function") prev();
-        } finally {
-          resolve(window.Module);
-        }
+        try { if (typeof prev === "function") prev(); } finally { resolve(window.Module); }
       };
     } catch (err) {
       reject(err);
@@ -108,35 +98,30 @@ function initModule(moduleConfig) {
   });
 }
 
+/**
+ * Assemble /rootfs/disk.raw by concatenating wasm/parts/disk.raw.partXX
+ * Tries parts 00..30 and stops when a part is missing (404).
+ * Uses Module.FS.writeFile/readFile fallback to avoid low-level FS.write differences.
+ */
 async function assembleDiskFromParts(Module) {
   appendVmLine("Assembling disk.raw from /wasm/parts/ ...");
-  try {
-    try { Module.FS.mkdir("/rootfs"); } catch (e) {}
-  } catch (e) {
-    appendVmLine("FS not available to create /rootfs: " + e.message);
+
+  if (!Module || !Module.FS) {
+    appendVmLine("Module.FS not available; cannot assemble disk.");
     throw new Error("FS not available");
   }
 
-  // Create or truncate the target file
-  let fd;
-  try {
-    // Use writeFile to create an empty file first if open fails on some builds
-    try { Module.FS.unlink("/rootfs/disk.raw"); } catch (e) {}
-    Module.FS.writeFile("/rootfs/disk.raw", new Uint8Array(0));
-    fd = Module.FS.open("/rootfs/disk.raw", "r+");
-  } catch (e) {
-    try {
-      fd = Module.FS.open("/rootfs/disk.raw", "w+");
-    } catch (e2) {
-      appendVmLine("Failed to open /rootfs/disk.raw for writing: " + e2.message);
-      throw e2;
-    }
+  try { Module.FS.mkdir("/rootfs"); } catch (e) {}
+
+  // Start with empty file
+  try { Module.FS.writeFile("/rootfs/disk.raw", new Uint8Array(0)); } catch (e) {
+    appendVmLine("Failed to create /rootfs/disk.raw: " + e.message);
+    throw e;
   }
 
-  let pos = 0;
-  let index = 0;
-  while (true) {
-    const partName = `wasm/parts/disk.raw.part${String(index).padStart(2, "0")}`;
+  let total = 0;
+  for (let i = 0; i <= 30; i++) {
+    const partName = `wasm/parts/disk.raw.part${String(i).padStart(2, "0")}`;
     appendVmLine("Attempting fetch: " + partName);
     let resp;
     try {
@@ -150,58 +135,35 @@ async function assembleDiskFromParts(Module) {
       break;
     }
 
-    // Stream the part into FS in chunks
-    if (!resp.body || !resp.body.getReader) {
-      // Fallback: read whole arrayBuffer
-      const ab = await resp.arrayBuffer();
-      const chunk = new Uint8Array(ab);
+    // read whole part
+    const ab = await resp.arrayBuffer();
+    const chunk = new Uint8Array(ab);
+    total += chunk.length;
+
+    // read existing file and append (safe across Emscripten builds)
+    try {
+      const existing = Module.FS.readFile("/rootfs/disk.raw", { encoding: "binary" });
+      const combined = new Uint8Array(existing.length + chunk.length);
+      combined.set(existing, 0);
+      combined.set(chunk, existing.length);
+      Module.FS.writeFile("/rootfs/disk.raw", combined);
+    } catch (e) {
+      // fallback: try low-level open/write if available
       try {
-        Module.FS.write(fd, chunk, 0, chunk.length, pos);
-      } catch (e) {
-        // fallback to read/concat/writeFile
-        const existing = Module.FS.readFile("/rootfs/disk.raw", { encoding: "binary" });
-        const combined = new Uint8Array(existing.length + chunk.length);
-        combined.set(existing, 0);
-        combined.set(chunk, existing.length);
-        Module.FS.writeFile("/rootfs/disk.raw", combined);
-        pos = combined.length;
+        const fd = Module.FS.open("/rootfs/disk.raw", "a");
+        Module.FS.write(fd, chunk, 0, chunk.length, null);
+        Module.FS.close(fd);
+      } catch (e2) {
+        appendVmLine("Failed to append part " + partName + ": " + (e2.message || e.message));
+        throw e2;
       }
-      pos += chunk.length;
-      index++;
-      continue;
     }
 
-    const reader = resp.body.getReader();
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      const chunk = value instanceof Uint8Array ? value : new Uint8Array(value);
-      try {
-        Module.FS.write(fd, chunk, 0, chunk.length, pos);
-      } catch (e) {
-        // Some Emscripten builds expect write to be used differently; fallback to read/concat/writeFile
-        try {
-          const existing = Module.FS.readFile("/rootfs/disk.raw", { encoding: "binary" });
-          const combined = new Uint8Array(existing.length + chunk.length);
-          combined.set(existing, 0);
-          combined.set(chunk, existing.length);
-          Module.FS.writeFile("/rootfs/disk.raw", combined);
-          pos = combined.length;
-        } catch (e2) {
-          Module.FS.close(fd);
-          appendVmLine("Failed to write chunk: " + e2.message);
-          throw e2;
-        }
-      }
-      pos += chunk.length;
-    }
-
-    index++;
+    appendVmLine("Appended " + partName + " (" + chunk.length + " bytes)");
   }
 
-  try { Module.FS.close(fd); } catch (e) {}
-  appendVmLine("disk.raw assembled, size " + pos + " bytes");
-  return pos;
+  appendVmLine("disk.raw assembled, total size " + total + " bytes");
+  return total;
 }
 
 async function startTinyEmuAndBoot() {
@@ -214,7 +176,6 @@ async function startTinyEmuAndBoot() {
   const wasmBinary = await fetchArrayBuffer("wasm/tinyemu.wasm");
   appendVmLine("tinyemu.wasm fetched.");
 
-  // Provide print hooks so module output goes to the page
   const moduleConfig = {
     wasmBinary,
     print: text => appendVmLine(String(text)),
@@ -234,17 +195,14 @@ async function startTinyEmuAndBoot() {
 
   installConsoleHooks(Module);
 
-  // Wait for FS to be available
+  // Wait briefly for FS to appear
   if (!Module.FS) {
     appendVmLine("Waiting for Module.FS to be available...");
     const start = Date.now();
     while (!Module.FS && Date.now() - start < 5000) {
       await new Promise(r => setTimeout(r, 50));
     }
-    if (!Module.FS) {
-      appendVmLine("Module.FS not available after wait.");
-      // Continue anyway; later operations will fail with clearer messages
-    }
+    if (!Module.FS) appendVmLine("Module.FS not available after wait.");
   }
 
   // Fetch kernel (vmlinux)
@@ -266,12 +224,12 @@ async function startTinyEmuAndBoot() {
     appendVmLine("FS write error (kernel): " + err.message);
   }
 
-  // Assemble disk.raw from /wasm/parts/
+  // Assemble disk.raw from wasm/parts/disk.raw.part00..part30
   let diskSize = 0;
   try {
     diskSize = await assembleDiskFromParts(Module);
     if (diskSize === 0) {
-      appendVmLine("No disk parts found; disk.raw size is 0. Boot may fail if disk is required.");
+      appendVmLine("No disk parts found; disk.raw size is 0. Boot may still proceed if kernel doesn't require disk.");
     }
   } catch (err) {
     appendVmLine("Disk assembly failed: " + (err.message || err));
@@ -290,11 +248,6 @@ async function startTinyEmuAndBoot() {
 
   // Build argv in Emscripten memory and call main
   try {
-    if (!Module._malloc && !Module.callMain && !Module.cwrap) {
-      appendVmLine("Warning: Module runtime helpers not found (_malloc/callMain). Attempting to continue.");
-    }
-
-    // If callMain exists (classic builds), prefer it
     if (typeof Module.callMain === "function") {
       appendVmLine("Using Module.callMain (classic build).");
       Module.callMain(["tinyemu", ...args]);
@@ -302,8 +255,10 @@ async function startTinyEmuAndBoot() {
       return;
     }
 
-    // Otherwise build argv manually and call _main
-    if (!Module._malloc) throw new Error("_malloc not available on Module; cannot build argv");
+    if (!Module._malloc) {
+      appendVmLine("Module._malloc not available; cannot build argv for _main.");
+      return;
+    }
 
     const argc = args.length + 1;
     const argvBuffer = Module._malloc((argc + 1) * 4);
@@ -315,7 +270,6 @@ async function startTinyEmuAndBoot() {
       return buf;
     }
 
-    // program name
     const progPtr = writeStringToHeap("tinyemu");
     Module.setValue(ptrOffset, progPtr, "i32");
     ptrOffset += 4;
@@ -325,7 +279,7 @@ async function startTinyEmuAndBoot() {
       Module.setValue(ptrOffset, p, "i32");
       ptrOffset += 4;
     }
-    Module.setValue(ptrOffset, 0, "i32"); // null terminator
+    Module.setValue(ptrOffset, 0, "i32");
 
     appendVmLine("Calling _main with argc=" + argc);
     if (typeof Module._main === "function") {
@@ -346,9 +300,7 @@ async function startTinyEmuAndBoot() {
       const h = Module._get_framebuffer_height();
       appendVmLine("Framebuffer at " + fbPtr + " size " + w + "x" + h);
       function loopRender() {
-        try {
-          renderFramebuffer(Module, fbPtr, w, h);
-        } catch (e) {}
+        try { renderFramebuffer(Module, fbPtr, w, h); } catch (e) {}
         requestAnimationFrame(loopRender);
       }
       loopRender();
