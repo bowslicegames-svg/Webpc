@@ -3,19 +3,16 @@
 #include <stdint.h>
 #include <time.h>
 
-// Simple framebuffer API for optional graphics
 #define FB_W 320
 #define FB_H 200
 static uint32_t framebuffer[FB_W * FB_H];
 
-// Expose functions for JS to call
-uint32_t* get_framebuffer_ptr() { return framebuffer; }
-int get_framebuffer_width() { return FB_W; }
-int get_framebuffer_height() { return FB_H; }
+uint32_t* _get_framebuffer_ptr() { return framebuffer; }
+int _get_framebuffer_width() { return FB_W; }
+int _get_framebuffer_height() { return FB_H; }
 
-// Optional key hook
 static int last_key = 0;
-void vm_key(int k) { last_key = k; printf("[VM] key %d\n", k); fflush(stdout); }
+void _vm_key(int k) { last_key = k; printf("[VM] key %d\n", k); fflush(stdout); }
 
 static void draw_frame(int f) {
   uint32_t color = 0xFF000000 | ((f * 37) & 0x00FFFFFF);
@@ -44,7 +41,7 @@ int main(int argc, char** argv) {
       last_key = 0;
       fflush(stdout);
     }
-    struct timespec ts = {0, 33 * 1000 * 1000}; // ~33ms
+    struct timespec ts = {0, 33 * 1000 * 1000};
     nanosleep(&ts, NULL);
   }
 
