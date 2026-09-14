@@ -7,6 +7,7 @@
 #define FB_H 200
 static uint32_t framebuffer[FB_W * FB_H];
 
+// These MUST match the exported names in emcc
 uint32_t* _get_framebuffer_ptr() { return framebuffer; }
 int _get_framebuffer_width() { return FB_W; }
 int _get_framebuffer_height() { return FB_H; }
