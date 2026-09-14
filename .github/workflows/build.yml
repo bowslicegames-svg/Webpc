@@ -1,0 +1,67 @@
+name: Build TinyEMU WASM
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Install Emscripten SDK
+      run: |
+        git clone https://github.com/emscripten-core/emsdk.git
+        cd emsdk
+        ./emsdk install latest
+        ./emsdk activate latest
+        echo "$PWD/upstream/emscripten" >> $GITHUB_PATH
+        echo "$PWD" >> $GITHUB_PATH
+
+    - name: Build tinyemu
+      run: |
+        source emsdk/emsdk_env.sh
+        mkdir -p docs/wasm
+        emcc wasm-vm/src/main.c \
+          -O2 \
+          -s WASM=1 \
+          -s MODULARIZE=1 \
+          -s EXPORT_NAME="TinyEmuModule" \
+          -s ENVIRONMENT=web \
+          -s ALLOW_MEMORY_GROWTH=1 \
+          -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap","FS","getValue","setValue","stringToUTF8"]' \
+          -s EXPORTED_FUNCTIONS='["_main","_get_framebuffer_ptr","_get_framebuffer_width","_get_framebuffer_height","_vm_key"]' \
+          -o docs/wasm/tinyemu.js
+        ls -lh docs/wasm/tinyemu.js docs/wasm/tinyemu.wasm
+
+    - name: Fail if wasm too small
+      run: |
+        size=$(stat -c%s docs/wasm/tinyemu.wasm || echo 0)
+        echo "WASM size: $size"
+        if [ "$size" -lt 200000 ]; then
+          echo "WASM too small ($size bytes) — build likely failed"
+          exit 1
+        fi
+
+    - name: Disable Jekyll
+      run: echo "" > docs/.nojekyll
+
+    - name: Upload Pages artifact
+      uses: actions/upload-pages-artifact@v3
+      with:
+        path: docs/
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    steps:
+    - name: Deploy to GitHub Pages
+      uses: actions/deploy-pages@v4
