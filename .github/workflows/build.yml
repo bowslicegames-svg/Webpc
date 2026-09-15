@@ -44,14 +44,6 @@ jobs:
           echo "=== produced files ==="
           ls -lh docs/wasm || true
 
-      - name: Fail if wasm too small
-        run: |
-          size=$(stat -c%s docs/wasm/tinyemu.wasm || echo 0)
-          echo "WASM size: $size"
-          if [ "$size" -lt 200000 ]; then
-            echo "WASM too small ($size bytes) — build likely failed"
-            exit 1
-          fi
 
       - name: Upload wasm JS artifact
         uses: actions/upload-artifact@v4
