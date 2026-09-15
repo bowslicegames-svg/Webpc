@@ -36,25 +36,33 @@ void vm_key(int k) {
     fflush(stdout);
 }
 
-// Draw a simple pattern into the framebuffer
+// Draw a simple animated pattern into the framebuffer
 static void draw_frame(int frame) {
     uint32_t base = 0xFF000000u;
-    uint32_t color = base | ((frame * 37) & 0x00FFFFFFu);
     for (int y = 0; y < FB_H; ++y) {
         for (int x = 0; x < FB_W; ++x) {
-            // simple moving gradient
-            uint32_t px = color ^ ((x + frame) * 31) ^ ((y + frame) * 17);
+            uint32_t px = base | (((x + frame) * 31) ^ ((y + frame) * 17));
             framebuffer[y * FB_W + x] = px;
         }
     }
 }
 
-// Provide a friendly, non-blocking main that keeps runtime alive
+// main loop called by Emscripten
+static void main_loop(void) {
+    static int frame = 0;
+    draw_frame(frame++);
+    if (last_key) {
+        printf("[VM] key seen: %d\n", last_key);
+        last_key = 0;
+        fflush(stdout);
+    }
+}
+
+// Friendly main that prints args and installs the main loop
 int main(int argc, char** argv) {
     printf("TinyEMU Emscripten build: starting\n");
     fflush(stdout);
 
-    // Print args for debugging
     printf("argc=%d\n", argc);
     for (int i = 0; i < argc; ++i) {
         printf("argv[%d]=%s\n", i, argv[i] ? argv[i] : "(null)");
@@ -62,26 +70,10 @@ int main(int argc, char** argv) {
     fflush(stdout);
 
     // Warmup frames
-    for (int i = 0; i < 3; ++i) {
-        draw_frame(i);
-    }
+    for (int i = 0; i < 3; ++i) draw_frame(i);
 
-    // Use emscripten_set_main_loop to yield to the browser and keep running
-    emscripten_set_main_loop_arg(
-        (void (*)(void*)) (void*) (^(void* arg){
-            static int frame = 0;
-            draw_frame(frame++);
-            if (last_key) {
-                printf("[VM] key seen: %d\n", last_key);
-                last_key = 0;
-                fflush(stdout);
-            }
-        }),
-        NULL,
-        0,
-        1
-    );
+    // Install the main loop (browser-friendly)
+    emscripten_set_main_loop(main_loop, 0, 1);
 
-    // Should never reach here because main loop is installed
     return 0;
 }
