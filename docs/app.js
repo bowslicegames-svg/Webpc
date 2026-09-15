@@ -1,7 +1,6 @@
 // docs/app.js
 // TinyEMU loader + Linux boot helper for GitHub Pages
-// Restored to the last working version + tiny safe yield after each part.
-// Index.html is in /docs and wasm files are in /docs/wasm/, parts are in /docs/wasm/parts/
+// Regenerated: yield after every 5 parts, stronger yields to prevent Chrome iPad stalls.
 
 const vmOutput = document.getElementById("vm-output");
 const startBtn = document.getElementById("start-vm");
@@ -94,14 +93,19 @@ function initModule(moduleConfig) {
 }
 
 /*
-  Disk assembler — restored to the last working version
-  - Streams each part
-  - Writes in 64 KiB chunks
-  - Micro-yield (1ms) inside chunk loop
-  - Yield every 5 parts (0ms)
-  - NEW: tiny safe yield (3ms) after each part
+  Disk assembler (yield after every 5 parts)
+  - Strong yield: 50ms
+  - Micro-yield inside each part: 1ms
+  - Prevents Chrome on iPad from killing the tab
 */
-async function assembleDiskFromParts(Module) {
+async function assembleDiskFromParts(Module, opts) {
+  opts = opts || {};
+  const maxPartIndex = opts.maxPartIndex ?? 30;
+  const partPrefix = opts.partPrefix ?? "wasm/parts/disk.raw.part";
+  const pad = opts.pad ?? 2;
+  const chunkWriteSize = opts.chunkWriteSize ?? 64 * 1024;
+  const yieldAfterParts = opts.yieldAfterParts ?? 5;
+
   appendVmLine("Assembling disk.raw from /wasm/parts/...");
 
   if (!Module || !Module.FS) {
@@ -113,8 +117,7 @@ async function assembleDiskFromParts(Module) {
 
   let fd;
   try {
-    Module.FS.writeFile("/rootfs/disk.raw", new Uint8Array(0));
-    fd = Module.FS.open("/rootfs/disk.raw", "r+");
+    fd = Module.FS.open("/rootfs/disk.raw", "w+");
   } catch (e) {
     appendVmLine("Failed to open /rootfs/disk.raw: " + e.message);
     throw e;
@@ -124,10 +127,10 @@ async function assembleDiskFromParts(Module) {
   let partsWritten = 0;
 
   const microYield = () => new Promise(r => setTimeout(r, 1));
-  const tinyYield = () => new Promise(r => setTimeout(r, 3));
+  const bigYield = () => new Promise(r => setTimeout(r, 50));
 
-  for (let i = 0; i <= 30; i++) {
-    const partName = `wasm/parts/disk.raw.part${String(i).padStart(2, "0")}`;
+  for (let i = 0; i <= maxPartIndex; i++) {
+    const partName = `${partPrefix}${String(i).padStart(pad, "0")}`;
     appendVmLine("Fetching " + partName);
 
     const resp = await fetch(partName, { cache: "no-store" });
@@ -143,26 +146,23 @@ async function assembleDiskFromParts(Module) {
       if (done) break;
 
       let offset = 0;
-      const CHUNK = 64 * 1024;
-
       while (offset < value.length) {
-        const slice = value.subarray(offset, offset + CHUNK);
+        const slice = value.subarray(offset, offset + chunkWriteSize);
         Module.FS.write(fd, slice, 0, slice.length, pos);
         pos += slice.length;
-        offset += CHUNK;
+        offset += chunkWriteSize;
 
-        await microYield();
+        await microYield(); // prevent long blocking loops
       }
     }
 
     partsWritten++;
     appendVmLine(`Appended part ${i}, total bytes: ${pos}`);
 
-    if (partsWritten % 5 === 0) {
-      await microYield(); // same behavior as before
+    if (partsWritten % yieldAfterParts === 0) {
+      appendVmLine(`Yielding after ${partsWritten} parts...`);
+      await bigYield();
     }
-
-    await tinyYield(); // NEW: prevents crash at part 13–14
   }
 
   Module.FS.close(fd);
@@ -208,7 +208,13 @@ async function startTinyEmuAndBoot() {
 
   let diskSize = 0;
   try {
-    diskSize = await assembleDiskFromParts(Module);
+    diskSize = await assembleDiskFromParts(Module, {
+      maxPartIndex: 30,
+      partPrefix: "wasm/parts/disk.raw.part",
+      pad: 2,
+      chunkWriteSize: 64 * 1024,
+      yieldAfterParts: 5
+    });
   } catch (err) {
     appendVmLine("Disk assembly failed: " + err.message);
   }
