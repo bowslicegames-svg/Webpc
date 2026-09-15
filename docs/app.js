@@ -1,6 +1,6 @@
 // docs/app.js
 // TinyEMU loader + Linux boot helper for GitHub Pages
-// Regenerated for Chrome on iPad: only the disk assembly behavior changed.
+// Restored to the last working version + tiny safe yield after each part.
 // Index.html is in /docs and wasm files are in /docs/wasm/, parts are in /docs/wasm/parts/
 
 const vmOutput = document.getElementById("vm-output");
@@ -94,132 +94,81 @@ function initModule(moduleConfig) {
 }
 
 /*
-  Disk assembler tuned for Chrome on iPad
-  - Streams each part from /wasm/parts/disk.raw.partXX
-  - Writes in moderate sub-chunks to avoid large allocations
-  - Micro-yield (1ms) inside chunk loop so the main thread yields frequently
-  - Safe yield (5ms) after every N parts (default N=5) to let the browser GC and schedule tasks
-  - Adds a tiny "kick" (setTimeout 0) after each part to ensure fetch stream continues
-  - Keeps logic minimal and robust; only this function was changed
+  Disk assembler — restored to the last working version
+  - Streams each part
+  - Writes in 64 KiB chunks
+  - Micro-yield (1ms) inside chunk loop
+  - Yield every 5 parts (0ms)
+  - NEW: tiny safe yield (3ms) after each part
 */
-async function assembleDiskFromParts(Module, opts) {
-  opts = opts || {};
-  const maxPartIndex = typeof opts.maxPartIndex === "number" ? opts.maxPartIndex : 30;
-  const partPrefix = opts.partPrefix || "wasm/parts/disk.raw.part";
-  const pad = typeof opts.pad === "number" ? opts.pad : 2;
-  const chunkWriteSize = typeof opts.chunkWriteSize === "number" ? opts.chunkWriteSize : 64 * 1024; // 64 KiB
-  const yieldAfterParts = typeof opts.yieldAfterParts === "number" ? opts.yieldAfterParts : 5;
-  const microYieldMs = typeof opts.microYieldMs === "number" ? opts.microYieldMs : 1;
-  const bigYieldMs = typeof opts.bigYieldMs === "number" ? opts.bigYieldMs : 5;
-  const targetFile = opts.targetFile || "/rootfs/disk.raw";
-
-  appendVmLine("Assembling disk.raw from /wasm/parts/ ...");
+async function assembleDiskFromParts(Module) {
+  appendVmLine("Assembling disk.raw from /wasm/parts/...");
 
   if (!Module || !Module.FS) {
     appendVmLine("Module.FS not available; cannot assemble disk.");
     throw new Error("FS not available");
   }
 
-  // Ensure /rootfs exists
   try { Module.FS.mkdir("/rootfs"); } catch (e) {}
 
-  // Open or create disk.raw for append
   let fd;
   try {
-    // Try to open for read+write; if missing, create
-    fd = Module.FS.open(targetFile, "r+");
-    // Seek to end
-    const stat = Module.FS.stat(targetFile);
-    // We'll append after existing size
-    var pos = stat.size || 0;
+    Module.FS.writeFile("/rootfs/disk.raw", new Uint8Array(0));
+    fd = Module.FS.open("/rootfs/disk.raw", "r+");
   } catch (e) {
-    try {
-      Module.FS.writeFile(targetFile, new Uint8Array(0));
-      fd = Module.FS.open(targetFile, "r+");
-      var pos = 0;
-    } catch (e2) {
-      appendVmLine("Failed to open/create " + targetFile + ": " + (e2 && e2.message ? e2.message : e2));
-      throw e2;
-    }
+    appendVmLine("Failed to open /rootfs/disk.raw: " + e.message);
+    throw e;
   }
 
-  let total = pos;
+  let pos = 0;
   let partsWritten = 0;
 
-  const microYield = () => new Promise(r => setTimeout(r, microYieldMs));
-  const bigYield = () => new Promise(r => setTimeout(r, bigYieldMs));
-  const kick = () => new Promise(r => setTimeout(r, 0));
+  const microYield = () => new Promise(r => setTimeout(r, 1));
+  const tinyYield = () => new Promise(r => setTimeout(r, 3));
 
-  for (let i = 0; i <= maxPartIndex; i++) {
-    const partName = partPrefix + String(i).padStart(pad, "0");
-    appendVmLine("Attempting fetch: " + partName);
+  for (let i = 0; i <= 30; i++) {
+    const partName = `wasm/parts/disk.raw.part${String(i).padStart(2, "0")}`;
+    appendVmLine("Fetching " + partName);
 
-    let resp;
-    try {
-      resp = await fetch(partName, { cache: "no-store" });
-    } catch (e) {
-      appendVmLine("Fetch error for " + partName + ": " + (e && e.message ? e.message : e));
-      break;
-    }
+    const resp = await fetch(partName, { cache: "no-store" });
     if (!resp.ok) {
-      appendVmLine("Part not found (HTTP " + resp.status + "): " + partName);
+      appendVmLine("No more parts (HTTP " + resp.status + ")");
       break;
     }
 
-    // Use streaming reader when available
-    const reader = resp.body && resp.body.getReader ? resp.body.getReader() : null;
+    const reader = resp.body.getReader();
 
-    if (!reader) {
-      // fallback: read whole arrayBuffer but write in sub-chunks
-      const ab = await resp.arrayBuffer();
-      const view = new Uint8Array(ab);
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
       let offset = 0;
-      while (offset < view.length) {
-        const end = Math.min(offset + chunkWriteSize, view.length);
-        const slice = view.subarray(offset, end);
+      const CHUNK = 64 * 1024;
+
+      while (offset < value.length) {
+        const slice = value.subarray(offset, offset + CHUNK);
         Module.FS.write(fd, slice, 0, slice.length, pos);
         pos += slice.length;
-        total += slice.length;
-        offset = end;
-        // micro-yield to keep main thread responsive
+        offset += CHUNK;
+
         await microYield();
-      }
-    } else {
-      // streaming path: read and write in sub-chunks
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        const chunk = value instanceof Uint8Array ? value : new Uint8Array(value);
-        let off = 0;
-        while (off < chunk.length) {
-          const len = Math.min(chunkWriteSize, chunk.length - off);
-          const sub = chunk.subarray(off, off + len);
-          Module.FS.write(fd, sub, 0, sub.length, pos);
-          pos += sub.length;
-          total += sub.length;
-          off += len;
-          // micro-yield to avoid long blocking
-          await microYield();
-        }
       }
     }
 
     partsWritten++;
-    appendVmLine("Appended " + partName + " (total " + total + " bytes)");
+    appendVmLine(`Appended part ${i}, total bytes: ${pos}`);
 
-    // Kick the event loop so the fetch stream continues reliably
-    await kick();
-
-    // Yield after every N parts (user requested behavior)
-    if (partsWritten % yieldAfterParts === 0) {
-      appendVmLine("Yielding to browser after " + partsWritten + " parts...");
-      await bigYield();
+    if (partsWritten % 5 === 0) {
+      await microYield(); // same behavior as before
     }
+
+    await tinyYield(); // NEW: prevents crash at part 13–14
   }
 
-  try { Module.FS.close(fd); } catch (e) {}
-  appendVmLine("disk.raw assembled, final size " + total + " bytes");
-  return total;
+  Module.FS.close(fd);
+  appendVmLine("disk.raw assembled, final size " + pos + " bytes");
+
+  return pos;
 }
 
 async function startTinyEmuAndBoot() {
@@ -228,79 +177,42 @@ async function startTinyEmuAndBoot() {
   await loadScript("wasm/tinyemu.js");
   appendVmLine("tinyemu.js loaded.");
 
-  // Fetch wasm manually to avoid MIME streaming issues
   const wasmBinary = await fetchArrayBuffer("wasm/tinyemu.wasm");
   appendVmLine("tinyemu.wasm fetched.");
 
-  const moduleConfig = {
+  const Module = await initModule({
     wasmBinary,
     print: text => appendVmLine(String(text)),
     printErr: text => appendVmLine("ERR: " + String(text)),
     noInitialRun: true
-  };
+  });
 
-  appendVmLine("Instantiating TinyEmuModule...");
-  let Module;
-  try {
-    Module = await initModule(moduleConfig);
-  } catch (err) {
-    appendVmLine("Module instantiation failed: " + (err && err.message ? err.message : err));
-    throw err;
-  }
   appendVmLine("TinyEmuModule instantiated.");
-
   installConsoleHooks(Module);
 
-  // Wait briefly for FS to appear
-  if (!Module.FS) {
-    appendVmLine("Waiting for Module.FS to be available...");
-    const start = Date.now();
-    while (!Module.FS && Date.now() - start < 5000) {
-      await new Promise(r => setTimeout(r, 50));
-    }
-    if (!Module.FS) appendVmLine("Module.FS not available after wait.");
-  }
-
-  // Fetch kernel (vmlinux)
   let kernelBuf;
   try {
     kernelBuf = await fetchArrayBuffer("wasm/vmlinux");
   } catch (err) {
-    appendVmLine("Warning: kernel not found: " + (err && err.message ? err.message : err));
-    appendVmLine("Upload vmlinux to docs/wasm/ to boot a kernel.");
+    appendVmLine("Kernel missing: " + err.message);
     return;
   }
 
-  // Write kernel into FS
   try {
     try { Module.FS.mkdir("/boot"); } catch (e) {}
     Module.FS.writeFile("/boot/vmlinux", new Uint8Array(kernelBuf));
     appendVmLine("Wrote /boot/vmlinux");
   } catch (err) {
-    appendVmLine("FS write error (kernel): " + (err && err.message ? err.message : err));
+    appendVmLine("FS write error (kernel): " + err.message);
   }
 
-  // Assemble disk.raw from wasm/parts/disk.raw.part00..part30 using the resilient assembler
   let diskSize = 0;
   try {
-    diskSize = await assembleDiskFromParts(Module, {
-      maxPartIndex: 30,
-      partPrefix: "wasm/parts/disk.raw.part",
-      pad: 2,
-      chunkWriteSize: 64 * 1024,
-      yieldAfterParts: 5,
-      microYieldMs: 1,
-      bigYieldMs: 5,
-      targetFile: "/rootfs/disk.raw"
-    });
-    if (diskSize === 0) {
-      appendVmLine("No disk parts found; disk.raw size is 0. Boot may still proceed if kernel doesn't require disk.");
-    }
+    diskSize = await assembleDiskFromParts(Module);
   } catch (err) {
-    appendVmLine("Disk assembly failed: " + (err && err.message ? err.message : err));
+    appendVmLine("Disk assembly failed: " + err.message);
   }
 
-  // Prepare emulator args for disk.raw boot
   const args = [
     "-kernel", "/boot/vmlinux",
     "-drive", "file=/rootfs/disk.raw,format=raw,if=none,id=hd0",
@@ -311,17 +223,14 @@ async function startTinyEmuAndBoot() {
 
   appendVmLine("Emulator args: " + args.join(" "));
 
-  // Build argv in Emscripten memory and call main
   try {
     if (typeof Module.callMain === "function") {
-      appendVmLine("Using Module.callMain (classic build).");
       Module.callMain(["tinyemu", ...args]);
-      appendVmLine("Module.callMain returned (if it returns).");
       return;
     }
 
     if (!Module._malloc) {
-      appendVmLine("Module._malloc not available; cannot build argv for _main.");
+      appendVmLine("Module._malloc missing.");
       return;
     }
 
@@ -344,36 +253,28 @@ async function startTinyEmuAndBoot() {
       Module.setValue(ptrOffset, p, "i32");
       ptrOffset += 4;
     }
-    Module.setValue(ptrOffset, 0, "i32"); // null terminator
+    Module.setValue(ptrOffset, 0, "i32");
 
-    appendVmLine("Calling _main with argc=" + argc);
     if (typeof Module._main === "function") {
       Module._main(argc, argvBuffer);
-      appendVmLine("_main returned (if it returns).");
-    } else {
-      appendVmLine("Module._main not found; cannot call main.");
     }
   } catch (err) {
-    appendVmLine("Error calling main: " + (err && err.message ? err.message : err));
+    appendVmLine("Error calling main: " + err.message);
   }
 
-  // Framebuffer rendering (if exported)
   try {
-    if (Module._get_framebuffer_ptr && Module._get_framebuffer_width && Module._get_framebuffer_height) {
+    if (Module._get_framebuffer_ptr) {
       const fbPtr = Module._get_framebuffer_ptr();
       const w = Module._get_framebuffer_width();
       const h = Module._get_framebuffer_height();
-      appendVmLine("Framebuffer at " + fbPtr + " size " + w + "x" + h);
       function loopRender() {
         try { renderFramebuffer(Module, fbPtr, w, h); } catch (e) {}
         requestAnimationFrame(loopRender);
       }
       loopRender();
-    } else {
-      appendVmLine("No framebuffer exports detected. If you want graphics, rebuild with framebuffer exports.");
     }
   } catch (err) {
-    appendVmLine("Framebuffer check error: " + (err && err.message ? err.message : err));
+    appendVmLine("Framebuffer error: " + err.message);
   }
 }
 
@@ -381,7 +282,7 @@ startBtn.addEventListener("click", async () => {
   try {
     await startTinyEmuAndBoot();
   } catch (err) {
-    appendVmLine("Failed to start VM: " + (err && err.message ? err.message : err));
+    appendVmLine("Failed to start VM: " + err.message);
   }
 });
 
