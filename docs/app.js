@@ -1,7 +1,8 @@
 // docs/app.js
 // TinyEMU loader + Linux boot helper for GitHub Pages
-// Minimal edits: robust streaming assembler for wasm/parts/disk.raw.partXX
-// Only the parts that caused the browser to bug out were changed (disk assembly).
+// Regenerated: only the disk assembly behavior changed to yield after every 5 parts.
+// Parts are expected at /wasm/parts/disk.raw.part00 .. part30
+// index.html is in /docs and wasm files are in /docs/wasm/
 
 const vmOutput = document.getElementById("vm-output");
 const startBtn = document.getElementById("start-vm");
@@ -41,8 +42,6 @@ async function fetchArrayBuffer(path) {
 }
 
 function installConsoleHooks(Module) {
-  // If the module prints to stdout/stderr via Module.print/printErr, they are already set below.
-  // If the module exposes a serial callback, you can hook it here.
   if (!Module) return;
   if (Module.print) Module.print = text => appendVmLine(String(text));
   if (Module.printErr) Module.printErr = text => appendVmLine("ERR: " + String(text));
@@ -96,12 +95,11 @@ function initModule(moduleConfig) {
 }
 
 /*
-  Resilient assembler for Chrome on iPad/desktop:
+  Disk assembler (modified to yield after every 5 parts)
   - Streams each part from /wasm/parts/disk.raw.partXX
-  - Writes in small sub-chunks to reduce heap pressure
-  - Mounts IDBFS at /rootfs and syncs periodically so progress persists across reloads
-  - Yields to the event loop frequently to avoid browser watchdogs
-  - Resumes from existing /rootfs/disk.raw size if present
+  - Writes in moderate sub-chunks to avoid huge allocations
+  - Persists to IDBFS periodically if available
+  - Yields (await) after every 5 parts to let the browser breathe
 */
 async function assembleDiskFromParts(Module, opts) {
   opts = opts || {};
@@ -109,8 +107,8 @@ async function assembleDiskFromParts(Module, opts) {
   const partPrefix = opts.partPrefix || "wasm/parts/disk.raw.part";
   const pad = typeof opts.pad === "number" ? opts.pad : 2;
   const chunkWriteSize = typeof opts.chunkWriteSize === "number" ? opts.chunkWriteSize : 64 * 1024; // 64 KiB
-  const yieldEveryChunks = typeof opts.yieldEveryChunks === "number" ? opts.yieldEveryChunks : 8;
   const syncEveryParts = typeof opts.syncEveryParts === "number" ? opts.syncEveryParts : 2;
+  const yieldAfterParts = typeof opts.yieldAfterParts === "number" ? opts.yieldAfterParts : 5;
   const rootPath = opts.rootPath || "/rootfs";
   const targetFile = opts.targetFile || "/rootfs/disk.raw";
 
@@ -121,20 +119,20 @@ async function assembleDiskFromParts(Module, opts) {
     throw new Error("FS not available");
   }
 
-  // Ensure root path exists and mount IDBFS for persistence
+  // Ensure root path exists and attempt to mount IDBFS for persistence
   try {
     try { Module.FS.mkdir(rootPath); } catch (e) {}
     try {
       Module.FS.mount(Module.IDBFS, {}, rootPath);
       appendVmLine("Mounted IDBFS at " + rootPath);
     } catch (e) {
-      appendVmLine("IDBFS mount failed (continuing in-memory): " + e.message);
+      appendVmLine("IDBFS mount failed (continuing in-memory): " + (e && e.message ? e.message : e));
     }
   } catch (e) {
-    appendVmLine("FS setup error: " + e.message);
+    appendVmLine("FS setup error: " + (e && e.message ? e.message : e));
   }
 
-  // Helper to sync from IDB to memory (load)
+  // Helpers to sync IDBFS
   function syncFromIdb() {
     return new Promise(resolve => {
       if (!Module.FS || !Module.FS.syncfs) return resolve();
@@ -144,8 +142,6 @@ async function assembleDiskFromParts(Module, opts) {
       });
     });
   }
-
-  // Helper to sync from memory to IDB (save)
   function syncToIdb() {
     return new Promise(resolve => {
       if (!Module.FS || !Module.FS.syncfs) return resolve();
@@ -178,7 +174,7 @@ async function assembleDiskFromParts(Module, opts) {
     try {
       fd = Module.FS.open(targetFile, "w+");
     } catch (e2) {
-      appendVmLine("Failed to open target file: " + e2.message);
+      appendVmLine("Failed to open target file: " + (e2 && e2.message ? e2.message : e2));
       throw e2;
     }
   }
@@ -187,8 +183,6 @@ async function assembleDiskFromParts(Module, opts) {
   let total = existingSize;
   let partsWritten = 0;
 
-  // If we have an existing size, we will still fetch parts sequentially but write only missing bytes.
-  // Simpler approach: append parts in order; if the file already contains some bytes, we append after them.
   for (let i = 0; i <= maxPartIndex; i++) {
     const partName = partPrefix + String(i).padStart(pad, "0");
     appendVmLine("Attempting fetch: " + partName);
@@ -197,7 +191,7 @@ async function assembleDiskFromParts(Module, opts) {
     try {
       resp = await fetch(partName, { cache: "no-store" });
     } catch (e) {
-      appendVmLine("Fetch error for " + partName + ": " + e.message);
+      appendVmLine("Fetch error for " + partName + ": " + (e && e.message ? e.message : e));
       break;
     }
     if (!resp.ok) {
@@ -205,7 +199,7 @@ async function assembleDiskFromParts(Module, opts) {
       break;
     }
 
-    // Prefer streaming reader when available
+    // Stream the part and write in sub-chunks
     const reader = resp.body && resp.body.getReader ? resp.body.getReader() : null;
 
     if (!reader) {
@@ -220,14 +214,9 @@ async function assembleDiskFromParts(Module, opts) {
         pos += slice.length;
         total += slice.length;
         offset = end;
-        // yield occasionally
-        if ((offset / chunkWriteSize) % yieldEveryChunks === 0) {
-          await new Promise(r => setTimeout(r, 0));
-        }
       }
     } else {
       // streaming path: read and write in sub-chunks
-      let chunkCount = 0;
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -240,11 +229,6 @@ async function assembleDiskFromParts(Module, opts) {
           pos += sub.length;
           total += sub.length;
           off += len;
-          chunkCount++;
-          if (chunkCount % yieldEveryChunks === 0) {
-            // yield to event loop so Chrome on iPad doesn't kill the page
-            await new Promise(r => setTimeout(r, 0));
-          }
         }
       }
     }
@@ -257,15 +241,18 @@ async function assembleDiskFromParts(Module, opts) {
       appendVmLine("Syncing to IDBFS (persisting)...");
       await syncToIdb();
       appendVmLine("Sync complete.");
-      // small pause after sync
-      await new Promise(r => setTimeout(r, 50));
     }
 
-    // small delay between parts to avoid spikes
-    await new Promise(r => setTimeout(r, 10));
+    // Yield after every N parts (user requested N=5 by default)
+    if (partsWritten % yieldAfterParts === 0) {
+      appendVmLine("Yielding to browser after " + partsWritten + " parts...");
+      // small pause to let the browser handle UI/GC and avoid watchdog
+      await new Promise(r => setTimeout(r, 0));
+    }
   }
 
   try { Module.FS.close(fd); } catch (e) {}
+  // Final sync
   await syncToIdb();
 
   appendVmLine("disk.raw assembled, final size " + total + " bytes");
@@ -314,7 +301,7 @@ async function startTinyEmuAndBoot() {
   try {
     kernelBuf = await fetchArrayBuffer("wasm/vmlinux");
   } catch (err) {
-    appendVmLine("Warning: kernel not found: " + err.message);
+    appendVmLine("Warning: kernel not found: " + (err && err.message ? err.message : err));
     appendVmLine("Upload vmlinux to docs/wasm/ to boot a kernel.");
     return;
   }
@@ -325,10 +312,10 @@ async function startTinyEmuAndBoot() {
     Module.FS.writeFile("/boot/vmlinux", new Uint8Array(kernelBuf));
     appendVmLine("Wrote /boot/vmlinux");
   } catch (err) {
-    appendVmLine("FS write error (kernel): " + err.message);
+    appendVmLine("FS write error (kernel): " + (err && err.message ? err.message : err));
   }
 
-  // Assemble disk.raw from wasm/parts/disk.raw.part00..part30 using the resilient assembler
+  // Assemble disk.raw from wasm/parts/disk.raw.part00..part30 using the assembler above
   let diskSize = 0;
   try {
     diskSize = await assembleDiskFromParts(Module, {
@@ -336,8 +323,8 @@ async function startTinyEmuAndBoot() {
       partPrefix: "wasm/parts/disk.raw.part",
       pad: 2,
       chunkWriteSize: 64 * 1024,
-      yieldEveryChunks: 8,
       syncEveryParts: 2,
+      yieldAfterParts: 5,
       rootPath: "/rootfs",
       targetFile: "/rootfs/disk.raw"
     });
@@ -345,7 +332,7 @@ async function startTinyEmuAndBoot() {
       appendVmLine("No disk parts found; disk.raw size is 0. Boot may fail if disk is required.");
     }
   } catch (err) {
-    appendVmLine("Disk assembly failed: " + (err.message || err));
+    appendVmLine("Disk assembly failed: " + (err && err.message ? err.message : err));
   }
 
   // Prepare emulator args for disk.raw boot
@@ -403,7 +390,7 @@ async function startTinyEmuAndBoot() {
       appendVmLine("Module._main not found; cannot call main.");
     }
   } catch (err) {
-    appendVmLine("Error calling main: " + (err.message || err));
+    appendVmLine("Error calling main: " + (err && err.message ? err.message : err));
   }
 
   // Framebuffer rendering (if exported)
@@ -424,7 +411,7 @@ async function startTinyEmuAndBoot() {
       appendVmLine("No framebuffer exports detected. If you want graphics, rebuild with framebuffer exports.");
     }
   } catch (err) {
-    appendVmLine("Framebuffer check error: " + err.message);
+    appendVmLine("Framebuffer check error: " + (err && err.message ? err.message : err));
   }
 }
 
@@ -432,7 +419,7 @@ startBtn.addEventListener("click", async () => {
   try {
     await startTinyEmuAndBoot();
   } catch (err) {
-    appendVmLine("Failed to start VM: " + (err.message || err));
+    appendVmLine("Failed to start VM: " + (err && err.message ? err.message : err));
   }
 });
 
