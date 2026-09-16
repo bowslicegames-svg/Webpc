@@ -1,12 +1,11 @@
-CC = gcc
-CFLAGS = -O2
-SRC = fakegpu.c
-OUT = fakegpu_writer
+# fake-gpu/Makefile
+obj-m += fakegpu.o
 
-all: $(OUT)
+KDIR ?= /lib/modules/$(shell uname -r)/build
+PWD := $(shell pwd)
 
-$(OUT): $(SRC)
-    $(CC) $(CFLAGS) -o $(OUT) $(SRC)
+all:
+    $(MAKE) -C $(KDIR) M=$(PWD) modules
 
 clean:
-    rm -f $(OUT) fakegpu_frame.bin
+    $(MAKE) -C $(KDIR) M=$(PWD) clean
