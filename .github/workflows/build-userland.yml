@@ -9,12 +9,40 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
 
       - name: Install build deps
         run: sudo apt-get update && sudo apt-get install -y build-essential
+
+      - name: Auto-fix Makefile (tabs + LF + no BOM)
+        working-directory: fake-gpu/userland
+        run: |
+          # Remove BOM if present
+          sed -i '1s/^\xEF\xBB\xBF//' Makefile
+
+          # Convert CRLF → LF
+          sed -i 's/\r$//' Makefile
+
+          # Remove leading spaces before tabs
+          sed -i 's/^ \+\t/\t/' Makefile
+
+          # Rebuild Makefile cleanly using printf (guarantees tabs)
+          printf "%s\n" "CC = gcc" > Makefile.fixed
+          printf "%s\n" "CFLAGS = -O2 -Wall" >> Makefile.fixed
+          printf "%s\n" "TARGETS = test_submit" >> Makefile.fixed
+          printf "%s\n" "" >> Makefile.fixed
+          printf "%s\n" "all: \$(TARGETS)" >> Makefile.fixed
+          printf "%s\n" "" >> Makefile.fixed
+          printf "%s\n" "test_submit: test_submit.c libfakegpu.c" >> Makefile.fixed
+          printf "\t%s\n" "\$(CC) \$(CFLAGS) -o test_submit test_submit.c libfakegpu.c" >> Makefile.fixed
+          printf "%s\n" "" >> Makefile.fixed
+          printf "%s\n" "clean:" >> Makefile.fixed
+          printf "\t%s\n" "rm -f \$(TARGETS) *.o" >> Makefile.fixed
+
+          mv Makefile.fixed Makefile
 
       - name: Build userland
         working-directory: fake-gpu/userland
