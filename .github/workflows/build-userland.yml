@@ -1,0 +1,32 @@
+name: Build fake-gpu userland
+
+on:
+  push:
+    paths:
+      - 'fake-gpu/**'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install build deps
+        run: sudo apt-get update && sudo apt-get install -y build-essential
+
+      - name: Build userland
+        working-directory: fake-gpu/userland
+        run: |
+          make clean || true
+          make
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: fake-gpu-userland
+          path: |
+            fake-gpu/userland/test_submit
+            fake-gpu/userland/libfakegpu.c
+            fake-gpu/userland/libfakegpu.h
