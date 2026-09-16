@@ -15,7 +15,15 @@
   <main>
     <section id="vm">
       <h2>VM</h2>
-      <button id="start-vm">Start VM</button>
+
+      <!-- Upload control added (nonworking part replaced) -->
+      <label for="disk-upload">Upload disk.raw (optional, recommended):</label>
+      <input id="disk-upload" type="file" accept=".raw,.img" />
+
+      <div style="margin-top:8px;">
+        <button id="start-vm">Start VM</button>
+      </div>
+
       <pre id="vm-output"></pre>
     </section>
 
